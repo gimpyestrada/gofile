@@ -5,6 +5,7 @@ Supports file uploads, folder management, content operations, and more.
 """
 
 import hashlib
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 
@@ -85,7 +86,6 @@ class GofileAPI:
             if response.status_code == 429:
                 # Rate limit hit - use exponential backoff
                 if retry_count < max_retries:
-                    import time
                     wait_time = (2 ** retry_count) * 5  # 5, 10, 20 seconds
                     print(f"⚠ Rate limit (429) - Waiting {wait_time}s before retry {retry_count + 1}/{max_retries}...")
                     time.sleep(wait_time)
@@ -122,8 +122,6 @@ class GofileAPI:
         while giving progressively longer recovery time as failures increase.
         This is the standard approach for handling rate limits in distributed systems.
         """
-        import time
-
         if attempt < max_retries:
             wait_time = (2 ** attempt) * BACKOFF_BASE_SECONDS
             print(f"⚠ Rate limit (429) - Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
