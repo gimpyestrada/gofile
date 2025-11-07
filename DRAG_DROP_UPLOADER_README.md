@@ -58,8 +58,11 @@ Create a `config.json` file in the same directory as the application:
 
 ### How to Get Your Credentials:
 
-1. **API Token**: Log into [Gofile.io](https://gofile.io) → Account Settings → API Token
-2. **Account ID**: Found in your account settings or profile URL
+1. Log into [Gofile.io](https://gofile.io)
+2. Go to **My Profile** → **Developer Information**
+3. Copy your:
+   - **Account ID**
+   - **Account Token** (use this as `api_token` in config.json)
 
 **Security Note**: Keep your `config.json` private! It contains your API credentials. Never commit it to public repositories.
 
