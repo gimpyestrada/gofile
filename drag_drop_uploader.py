@@ -48,7 +48,7 @@ class DragDropUploader:
         self.log_frame = None
         self.mini_frame = None
         
-    def log(self, message: str, level: str = "INFO"):
+    def log(self, message: str, level: str = "INFO") -> None:
         """
         Log message to GUI and print.
         
@@ -75,7 +75,7 @@ class DragDropUploader:
                 line_end = self.log_text.index("end-1c lineend")
                 self.log_text.tag_add("error", line_start, line_end)
     
-    def update_status(self, message: str):
+    def update_status(self, message: str) -> None:
         """Update status label in both normal and mini mode."""
         if self.status_label:
             self.status_label.config(text=message)
@@ -139,7 +139,7 @@ class DragDropUploader:
             self.log(f"Error loading cache: {e}", "ERROR")
             return None
     
-    def build_folder_structure(self):
+    def build_folder_structure(self) -> None:
         """Build mapping of package names to parent folder IDs."""
         self.log("Building folder structure...")
         
@@ -299,7 +299,7 @@ class DragDropUploader:
             self.log(f"Error getting folder link: {e}", "ERROR")
             return None
     
-    def upload_file(self, file_path: str):
+    def upload_file(self, file_path: str) -> None:
         """
         Upload file to appropriate folder.
         
@@ -423,7 +423,7 @@ class DragDropUploader:
             self.log(f"Upload failed: {e}", "ERROR")
             self.update_status("Ready - Drop APK file here")
     
-    def on_drop(self, event):
+    def on_drop(self, event) -> None:
         """Handle file drop event."""
         files = self.root.tk.splitlist(event.data)
         
@@ -444,7 +444,7 @@ class DragDropUploader:
             upload_thread.daemon = True
             upload_thread.start()
     
-    def initialize_api(self):
+    def initialize_api(self) -> None:
         """Initialize Gofile API connection."""
         try:
             self.log("Connecting to Gofile...")
@@ -476,7 +476,7 @@ class DragDropUploader:
             messagebox.showerror("Connection Error", 
                                f"Failed to connect to Gofile:\n{e}\n\nCheck your config.json file.")
     
-    def copy_link(self):
+    def copy_link(self) -> None:
         """Copy link to clipboard."""
         link = self.link_entry.get()
         if link:
@@ -484,7 +484,7 @@ class DragDropUploader:
             self.root.clipboard_append(link)
             self.log("Link copied to clipboard!", "SUCCESS")
     
-    def open_link(self):
+    def open_link(self) -> None:
         """Open link in browser."""
         link = self.link_entry.get()
         if link:
@@ -492,7 +492,7 @@ class DragDropUploader:
             webbrowser.open(link)
             self.log("Opened link in browser")
     
-    def toggle_mini_mode(self):
+    def toggle_mini_mode(self) -> None:
         """Toggle between normal and mini mode."""
         if self.mini_mode.get():
             # Switch to mini mode
@@ -507,7 +507,7 @@ class DragDropUploader:
             self.root.geometry("700x600")
             self.root.attributes('-topmost', False)
     
-    def run(self):
+    def run(self) -> None:
         """Run the application."""
         try:
             from tkinterdnd2 import TkinterDnD, DND_FILES
