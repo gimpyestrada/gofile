@@ -593,7 +593,6 @@ class DragDropUploader:
                                        font=('Arial', 9, 'bold'),
                                        anchor=tk.CENTER)
             drop_here_label.grid(row=0, column=0)
-            drop_here_label.grid(row=0, column=0)
             
             mini_drop_label = ttk.Label(mini_drop_frame, text="📁", 
                                        font=('Arial', 24),
