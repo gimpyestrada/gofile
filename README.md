@@ -311,7 +311,7 @@ This is an unofficial client library. It is not affiliated with or endorsed by G
 
 - [Gofile.io](https://gofile.io) - Official website
 - [Gofile API Documentation](https://gofile.io/api) - API reference
-- [Developer Information](https://gofile.io/myProfile) - Get your credentials
+- [Developer Information](https://gofile.io/myprofile) - Get your credentials
 
 ## 💬 Support
 
