@@ -60,11 +60,15 @@ class DragDropUploader:
         
     def log(self, message: str, level: str = "INFO") -> None:
         """
-        Log message to GUI and print.
+        Log a message to both the GUI and console.
         
-        Args:
-            message: Message to log
-            level: Log level (INFO, SUCCESS, ERROR, WARNING)
+        Parameters
+        ----------
+        message : str
+            The message to log.
+        level : str, optional
+            The log level for color coding. Valid values are 'INFO',
+            'SUCCESS', 'ERROR', 'WARNING'. Default is 'INFO'.
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_msg = f"[{timestamp}] {message}\n"
@@ -97,11 +101,16 @@ class DragDropUploader:
         """
         Parse APK filename to extract package name and version.
         
-        Args:
-            filename: APK filename
+        Parameters
+        ----------
+        filename : str
+            The APK filename to parse (e.g., 'com.app.name-1.0-release.apk').
         
-        Returns:
-            Dict with 'package', 'version', 'full_name' or None
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            Dictionary containing 'package', 'version', 'full_name', and
+            'filename' keys if parsing succeeds, None otherwise.
         """
         if not filename.lower().endswith('.apk'):
             return None
@@ -202,11 +211,15 @@ class DragDropUploader:
         """
         Create a new parent folder for a package.
         
-        Args:
-            package: Package name
+        Parameters
+        ----------
+        package : str
+            The package name (e.g., 'com.example.app').
         
-        Returns:
-            Parent folder ID or None
+        Returns
+        -------
+        Optional[str]
+            The parent folder ID if successful, None otherwise.
         """
         try:
             self.log(f"Creating parent folder: {package}")
@@ -226,14 +239,19 @@ class DragDropUploader:
     
     def create_version_folder(self, parent_id: str, version_folder_name: str) -> Optional[str]:
         """
-        Create or get version folder.
+        Create or get version folder within a parent folder.
         
-        Args:
-            parent_id: Parent folder ID
-            version_folder_name: Name of version folder
+        Parameters
+        ----------
+        parent_id : str
+            The parent folder ID where the version folder will be created.
+        version_folder_name : str
+            The name for the version folder (e.g., 'com.app.name-1.0-release').
         
-        Returns:
-            Version folder ID or None
+        Returns
+        -------
+        Optional[str]
+            The version folder ID if successful, None otherwise.
         """
         try:
             # Verify parent folder exists first
@@ -275,13 +293,17 @@ class DragDropUploader:
     
     def make_folder_public(self, folder_id: str) -> bool:
         """
-        Make a folder public.
+        Make a folder publicly accessible.
         
-        Args:
-            folder_id: Folder ID to make public
+        Parameters
+        ----------
+        folder_id : str
+            The ID of the folder to make public.
         
-        Returns:
-            True if successful
+        Returns
+        -------
+        bool
+            True if the operation succeeded, False otherwise.
         """
         try:
             self.log("Setting folder to public...")
@@ -294,13 +316,17 @@ class DragDropUploader:
     
     def get_folder_link(self, folder_id: str) -> Optional[str]:
         """
-        Get public link for a folder.
+        Get the public download link for a folder.
         
-        Args:
-            folder_id: Folder ID
+        Parameters
+        ----------
+        folder_id : str
+            The ID of the folder to get the link for.
         
-        Returns:
-            Public link or None
+        Returns
+        -------
+        Optional[str]
+            The public link URL if available, None otherwise.
         """
         try:
             contents = self.api.get_content(folder_id)
@@ -320,10 +346,16 @@ class DragDropUploader:
     
     def upload_file(self, file_path: str) -> None:
         """
-        Upload file to appropriate folder.
+        Upload an APK file to the appropriate Gofile folder structure.
         
-        Args:
-            file_path: Path to file to upload
+        This method handles the entire upload workflow including parsing
+        the filename, finding/creating folders, uploading the file, and
+        generating a public link.
+        
+        Parameters
+        ----------
+        file_path : str
+            The full path to the APK file to upload.
         """
         self.update_status("Processing...")
         self.link_entry.delete(0, tk.END)
