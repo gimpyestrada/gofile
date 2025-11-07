@@ -11,6 +11,11 @@ from typing import Optional, List, Dict, Any, Union
 import requests
 
 
+# Constants for rate limiting and hashing
+BACKOFF_BASE_SECONDS = 5
+SHA256_HASH_LENGTH = 64
+
+
 class RateLimitException(Exception):
     """Exception raised when API rate limit is exceeded."""
     pass
@@ -116,7 +121,7 @@ class GofileAPI:
                 # Check for rate limit before processing response
                 if response.status_code == 429:
                     if attempt < max_retries:
-                        wait_time = (2 ** attempt) * 5  # 5, 10, 20 seconds
+                        wait_time = (2 ** attempt) * BACKOFF_BASE_SECONDS
                         print(f"⚠ Rate limit (429) - Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
                         time.sleep(wait_time)
                         continue
@@ -210,7 +215,7 @@ class GofileAPI:
         params = {}
         if password:
             # If password is provided, hash it with SHA-256
-            if len(password) != 64:  # Not already hashed
+            if len(password) != SHA256_HASH_LENGTH:
                 password = hashlib.sha256(password.encode()).hexdigest()
             params['password'] = password
         
