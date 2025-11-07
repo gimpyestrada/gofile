@@ -78,7 +78,7 @@ class GofileAPI:
                     raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes before trying again.")
             raise Exception(f"HTTP Error: {e}")
         except RateLimitException:
-            raise  # Re-raise rate limit exceptions
+            raise
         except Exception as e:
             raise Exception(f"Error: {e}")
 
@@ -118,19 +118,18 @@ class GofileAPI:
                         wait_time = (2 ** attempt) * 5  # 5, 10, 20 seconds
                         print(f"⚠ Rate limit (429) - Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
                         time.sleep(wait_time)
-                        continue  # Retry the request
+                        continue
                     else:
                         raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes.")
                 
                 # Process successful response
                 return self._handle_response(response)
-                
+
             except RateLimitException:
-                raise  # Don't retry on final rate limit exception
-            except Exception as e:
+                raise
+            except Exception:
                 if attempt == max_retries:
-                    raise  # Re-raise on final attempt
-                # For other errors, don't retry automatically
+                    raise
                 raise
         
         raise RateLimitException("Max retries exceeded")
