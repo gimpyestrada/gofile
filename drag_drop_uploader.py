@@ -168,7 +168,9 @@ class DragDropUploader:
                     if package:
                         self.folder_structure[package] = folder_id
             
-            self.log(f"Loaded {len(self.folder_structure)} parent folders from cache", "SUCCESS")
+            parent_count = len(self.folder_structure)
+            self.log(f"Loaded {parent_count} parent folders from cache",
+                    "SUCCESS")
         else:
             self.log("No cache found - scanning Gofile...")
             
@@ -176,14 +178,19 @@ class DragDropUploader:
                 root_contents = self.api.get_content(self.root_folder_id)
                 children = root_contents.get('children', {})
                 
-                folders = [(cid, cdata) for cid, cdata in children.items() 
-                          if cdata.get('type') == 'folder']
+                folders = [
+                    (cid, cdata) for cid, cdata in children.items() 
+                    if cdata.get('type') == 'folder'
+                ]
                 
                 for folder_id, folder_data in folders:
                     folder_name = folder_data.get('name')
                     
-                    # Check if it's a parent folder (package name without version)
-                    if folder_name.count('.') >= 2 and '-' not in folder_name:
+                    # Check if it's a parent folder
+                    # (package name without version)
+                    is_parent = (folder_name.count('.') >= 2 and 
+                                '-' not in folder_name)
+                    if is_parent:
                         self.folder_structure[folder_name] = folder_id
                 
                 self.log(f"Found {len(self.folder_structure)} parent folders", "SUCCESS")
@@ -261,7 +268,9 @@ class DragDropUploader:
             
         except Exception as e:
             self.log(f"Error with version folder: {e}", "ERROR")
-            self.log("This may indicate the parent folder no longer exists or the cache is stale", "WARNING")
+            warning_msg = ("This may indicate the parent folder no longer "
+                          "exists or the cache is stale")
+            self.log(warning_msg, "WARNING")
             return None
     
     def make_folder_public(self, folder_id: str) -> bool:
@@ -379,8 +388,11 @@ class DragDropUploader:
                 parent_id = self.create_parent_folder(package)
                 
                 if parent_id:
-                    self.log("Parent folder recreated, retrying version folder creation...", "INFO")
-                    version_id = self.create_version_folder(parent_id, full_name)
+                    retry_msg = ("Parent folder recreated, retrying "
+                                "version folder creation...")
+                    self.log(retry_msg, "INFO")
+                    version_id = self.create_version_folder(parent_id,
+                                                            full_name)
                 
                 if not version_id:
                     self.log("Failed after retry - cannot proceed", "ERROR")
@@ -398,11 +410,18 @@ class DragDropUploader:
             upload_time = time.time() - start_time
             
             # Calculate upload speed
-            upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)  # Megabits per second
-            upload_speed_MBps = file_size_mb / upload_time  # Megabytes per second
+            # Megabits per second
+            upload_speed_mbps = (file_size_bytes * 8) / (
+                upload_time * 1_000_000
+            )
+            # Megabytes per second
+            upload_speed_MBps = file_size_mb / upload_time
             
-            self.log(f"Upload complete! ({upload_time:.1f} seconds)", "SUCCESS")
-            self.log(f"Upload speed: {upload_speed_MBps:.2f} MB/s ({upload_speed_mbps:.2f} Mbps)", "SUCCESS")
+            self.log(f"Upload complete! ({upload_time:.1f} seconds)",
+                    "SUCCESS")
+            speed_msg = (f"Upload speed: {upload_speed_MBps:.2f} MB/s "
+                        f"({upload_speed_mbps:.2f} Mbps)")
+            self.log(speed_msg, "SUCCESS")
             self.log(f"File ID: {result.get('fileId')}")
             
             # Make version folder public
@@ -483,8 +502,9 @@ class DragDropUploader:
         except Exception as e:
             self.log(f"Failed to connect to Gofile: {e}", "ERROR")
             self.update_status("Error - Check credentials")
-            messagebox.showerror("Connection Error", 
-                               f"Failed to connect to Gofile:\n{e}\n\nCheck your config.json file.")
+            error_msg = (f"Failed to connect to Gofile:\n{e}\n\n"
+                        "Check your config.json file.")
+            messagebox.showerror("Connection Error", error_msg)
     
     def copy_link(self) -> None:
         """Copy link to clipboard."""
@@ -545,18 +565,27 @@ class DragDropUploader:
             self.main_frame.rowconfigure(2, weight=1)
             
             # Drop zone
-            self.drop_frame = ttk.LabelFrame(self.main_frame, text="Drop Zone", padding="20")
-            self.drop_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+            self.drop_frame = ttk.LabelFrame(
+                self.main_frame, text="Drop Zone", padding="20"
+            )
+            self.drop_frame.grid(row=0, column=0, sticky=(tk.W, tk.E),
+                                pady=(0, 10))
             self.drop_frame.columnconfigure(0, weight=1)
             
-            drop_label = ttk.Label(self.drop_frame, text="📁 Drag & Drop APK Files Here", 
-                                  font=('Arial', 14, 'bold'),
-                                  anchor=tk.CENTER)
+            drop_label = ttk.Label(
+                self.drop_frame,
+                text="📁 Drag & Drop APK Files Here",
+                font=('Arial', 14, 'bold'),
+                anchor=tk.CENTER
+            )
             drop_label.grid(row=0, column=0, pady=20)
             
-            self.status_label = ttk.Label(self.drop_frame, text="Initializing...", 
-                                         font=('Arial', 10),
-                                         anchor=tk.CENTER)
+            self.status_label = ttk.Label(
+                self.drop_frame,
+                text="Initializing...",
+                font=('Arial', 10),
+                anchor=tk.CENTER
+            )
             self.status_label.grid(row=1, column=0)
             
             # Mini mode checkbox
