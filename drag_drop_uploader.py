@@ -522,6 +522,11 @@ class DragDropUploader:
             webbrowser.open(link)
             self.log("Opened link in browser")
     
+    def register_drop_target(self, widget, dnd_files_constant) -> None:
+        """Register a widget as a drag-and-drop target."""
+        widget.drop_target_register(dnd_files_constant)
+        widget.dnd_bind('<<Drop>>', self.on_drop)
+    
     def toggle_mini_mode(self) -> None:
         """Toggle between normal and mini mode."""
         if self.mini_mode.get():
@@ -589,14 +594,16 @@ class DragDropUploader:
             self.status_label.grid(row=1, column=0)
             
             # Mini mode checkbox
-            mini_check = ttk.Checkbutton(self.drop_frame, text="Mini Mode (Always on Top)", 
-                                        variable=self.mini_mode, 
-                                        command=self.toggle_mini_mode)
+            mini_check = ttk.Checkbutton(
+                self.drop_frame,
+                text="Mini Mode (Always on Top)",
+                variable=self.mini_mode,
+                command=self.toggle_mini_mode
+            )
             mini_check.grid(row=2, column=0, pady=(10, 0))
             
             # Enable drag and drop on drop frame
-            self.drop_frame.drop_target_register(DND_FILES)
-            self.drop_frame.dnd_bind('<<Drop>>', self.on_drop)
+            self.register_drop_target(self.drop_frame, DND_FILES)
             
             # Link frame
             self.link_frame = ttk.LabelFrame(self.main_frame, text="Public Link", padding="10")
@@ -651,16 +658,17 @@ class DragDropUploader:
             mini_drop_label.grid(row=1, column=0, pady=5)
             
             # Mini status
-            self.mini_status_label = ttk.Label(mini_drop_frame, text="Ready", 
-                                              font=('Arial', 8),
-                                              anchor=tk.CENTER)
+            self.mini_status_label = ttk.Label(
+                mini_drop_frame,
+                text="Ready",
+                font=('Arial', 8),
+                anchor=tk.CENTER
+            )
             self.mini_status_label.grid(row=2, column=0)
             
             # Enable drag and drop on mini frame
-            mini_drop_frame.drop_target_register(DND_FILES)
-            mini_drop_frame.dnd_bind('<<Drop>>', self.on_drop)
-            mini_drop_label.drop_target_register(DND_FILES)
-            mini_drop_label.dnd_bind('<<Drop>>', self.on_drop)
+            self.register_drop_target(mini_drop_frame, DND_FILES)
+            self.register_drop_target(mini_drop_label, DND_FILES)
             
             # Mini buttons frame
             mini_buttons = ttk.Frame(self.mini_frame)
