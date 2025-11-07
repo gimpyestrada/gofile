@@ -180,6 +180,8 @@ class GofileAPI:
         file_path_obj = Path(file_path)
         if not file_path_obj.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
+        if not file_path_obj.is_file():
+            raise ValueError(f"Path is not a file: {file_path}")
         
         with open(file_path, 'rb') as f:
             files = {'file': (file_path_obj.name, f)}
