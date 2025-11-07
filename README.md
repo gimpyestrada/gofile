@@ -1,45 +1,49 @@
 # Gofile API Python Client
 
-A Python client library for interacting with the [Gofile.io](https://gofile.io) API. This library provides a simple interface for uploading files, managing folders, creating direct links, and more.
+A comprehensive Python client library for interacting with the [Gofile.io](https://gofile.io) API. Upload files, manage folders, create direct links, and more with a simple, intuitive interface.
 
-## Features
+![Version](https://img.shields.io/badge/version-1.0-blue)
+![Python](https://img.shields.io/badge/python-3.6+-green)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
-- ✅ File uploads (guest and authenticated)
-- ✅ Folder creation and management
-- ✅ Content operations (get, update, delete, copy, move)
-- ✅ Search functionality
-- ✅ Direct link creation and management
-- ✅ Account information retrieval
-- ✅ Regional upload endpoints support
-- ✅ Password-protected content access
-- ✅ Automatic rate limit handling with exponential backoff
-- ✅ Configurable timeouts
+## ✨ Features
 
-## Installation
+- 📤 **File Uploads** - Guest and authenticated uploads with regional endpoint support
+- 📁 **Folder Management** - Create, organize, and manage your folder structure
+- ⚙️ **Content Operations** - Get, update, delete, copy, and move files/folders
+- 🔍 **Search Functionality** - Find content quickly across your account
+- 🔗 **Direct Links** - Create and manage direct download links (Premium)
+- 👤 **Account Management** - Retrieve account information and statistics
+- 🔒 **Password Protection** - Access and manage password-protected content
+- 🌍 **Regional Endpoints** - Upload to nearest server for optimal performance
+- 🚦 **Smart Rate Limiting** - Automatic exponential backoff retry logic
+- ⏱️ **Configurable Timeouts** - Customize request timeout settings
+
+## 📦 Installation
 
 ### Requirements
-- Python 3.6+
+- Python 3.6 or higher
 - `requests` library
 
 ### Setup
 
-1. Install the required dependency:
-```bash
-pip install requests
-```
-
-2. Clone this repository:
+1. **Clone this repository**:
 ```bash
 git clone https://github.com/yourusername/gofile-api-python.git
 cd gofile-api-python
 ```
 
-3. Create your configuration file:
+2. **Install dependencies**:
+```bash
+pip install requests
+```
+
+3. **Create your configuration file**:
 ```bash
 cp config.template.json config.json
 ```
 
-4. Edit `config.json` with your credentials:
+4. **Add your credentials** to `config.json`:
 ```json
 {
   "account_id": "your-account-id-here",
@@ -47,9 +51,19 @@ cp config.template.json config.json
 }
 ```
 
-Get your API token from your [Gofile profile page](https://gofile.io/myProfile).
+### How to Get Your Credentials:
 
-## Quick Start
+1. Log into [Gofile.io](https://gofile.io)
+2. Go to **My Profile** → **Developer Information**
+3. Copy your:
+   - **Account ID**
+   - **Account Token** (use this as `api_token` in config.json)
+
+**Security Note**: Keep your `config.json` private! Never commit it to public repositories.
+
+> **⚠️ Premium Requirement**: Most API endpoints require a premium account. Only basic operations like uploading, creating folders, and removing content are accessible with free accounts. Features like direct links, content copying/moving, and advanced operations require a premium subscription.
+
+## 🚀 Quick Start
 
 ### Run the Example
 
@@ -59,14 +73,14 @@ The easiest way to get started is to run the included example:
 python example.py
 ```
 
-This will demonstrate:
-- Getting account information
-- Creating folders
-- Uploading files
-- Retrieving folder contents
-- Updating folder settings
-- Searching for content
-- Deleting content
+This demonstrates:
+- ✅ Getting account information
+- ✅ Creating folders
+- ✅ Uploading files
+- ✅ Retrieving folder contents
+- ✅ Updating folder settings
+- ✅ Searching for content
+- ✅ Deleting content
 
 ### Basic Usage
 
@@ -100,7 +114,7 @@ print(f"Download page: {result['downloadPage']}")
 print(f"File ID: {result['fileId']}")
 ```
 
-## Usage Examples
+## 📚 Usage Examples
 
 ### Folder Management
 
@@ -169,7 +183,7 @@ password_hash = api.hash_password('mysecretpass')
 contents = api.get_content(folder_id, password=password_hash)
 ```
 
-## Rate Limiting
+## ⚡ Rate Limiting
 
 The API automatically handles rate limits (HTTP 429 responses) with exponential backoff:
 - First retry: waits 5 seconds
@@ -181,7 +195,7 @@ Per Gofile support:
 
 The client will automatically retry on rate limits up to 3 times before raising a `RateLimitException`.
 
-## Configuration
+## ⚙️ Configuration
 
 ### Timeout Settings
 
@@ -205,7 +219,7 @@ print(config.api_token)
 print(config.account_id)
 ```
 
-## API Reference
+## 📖 API Reference
 
 ### GofileAPI Class
 
@@ -254,7 +268,7 @@ Get your account ID.
 #### `get_account_details(account_id)`
 Get detailed account information.
 
-## Error Handling
+## 🚨 Error Handling
 
 ```python
 from gofile_api import GofileAPI, RateLimitException
@@ -270,33 +284,36 @@ except Exception as e:
     print(f"Error: {e}")
 ```
 
-## Security Best Practices
+## 🔒 Security Best Practices
 
 1. **Never commit `config.json`** - It's already in `.gitignore`
 2. **Keep your API token secret** - Treat it like a password
 3. **Use environment variables** for production deployments
 4. **Rotate your tokens regularly** from your Gofile profile
 
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
+## 📄 License
 
-This project is provided as-is for use with the Gofile API. Please refer to [Gofile's Terms of Service](https://gofile.io/terms) for API usage guidelines.
+MIT License - Feel free to use, modify, and distribute!
 
-## Disclaimer
+## ⚠️ Disclaimer
 
 This is an unofficial client library. It is not affiliated with or endorsed by Gofile.io.
 
-## Links
+## 🔗 Links
 
-- [Gofile.io](https://gofile.io)
-- [Gofile API Documentation](https://gofile.io/api)
-- [Get API Token](https://gofile.io/myProfile)
+- [Gofile.io](https://gofile.io) - Official website
+- [Gofile API Documentation](https://gofile.io/api) - API reference
+- [Developer Information](https://gofile.io/myProfile) - Get your credentials
 
-## Support
+## 💬 Support
 
-For Gofile API issues, contact [Gofile Support](https://gofile.io/contact).
+- **For Gofile API issues**: Contact [Gofile Support](https://gofile.io/contact)
+- **For library issues**: Open an issue on GitHub
 
-For issues with this library, please open an issue on GitHub.
+---
+
+**Made with ❤️ for the developer community**
