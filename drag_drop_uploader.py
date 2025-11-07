@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 import threading
 from gofile_api import GofileAPI
 from config_loader import load_config
