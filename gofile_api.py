@@ -80,8 +80,8 @@ class GofileAPI:
             data = response.json()
             if data.get('status') == 'ok':
                 return data.get('data', {})
-            else:
-                raise GofileResponseError(f"API Error: {data}")
+
+            raise GofileResponseError(f"API Error: {data}")
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
                 # Rate limit hit - use exponential backoff
@@ -91,8 +91,8 @@ class GofileAPI:
                     time.sleep(wait_time)
                     # Note: Caller needs to retry the actual request
                     raise RateLimitException(f"Rate limit exceeded. Waited {wait_time}s. Retry attempt {retry_count + 1}/{max_retries}")
-                else:
-                    raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes before trying again.")
+
+                raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes before trying again.")
             raise GofileHTTPError(f"HTTP Error: {e}")
         except RateLimitException:
             raise
@@ -106,14 +106,14 @@ class GofileAPI:
         """Execute HTTP request based on method type."""
         if method == 'get':
             return self.session.get(url, timeout=self.timeout, **kwargs)
-        elif method == 'post':
+        if method == 'post':
             return self.session.post(url, timeout=self.timeout, **kwargs)
-        elif method == 'put':
+        if method == 'put':
             return self.session.put(url, timeout=self.timeout, **kwargs)
-        elif method == 'delete':
+        if method == 'delete':
             return self.session.delete(url, timeout=self.timeout, **kwargs)
-        else:
-            raise ValueError(f"Unsupported HTTP method: {method}")
+
+        raise ValueError(f"Unsupported HTTP method: {method}")
 
     def _handle_rate_limit(self, attempt: int, max_retries: int):
         """Handle rate limit with exponential backoff.
@@ -127,8 +127,8 @@ class GofileAPI:
             print(f"⚠ Rate limit (429) - Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
             time.sleep(wait_time)
             return True
-        else:
-            raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes.")
+
+        raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes.")
 
     def _make_request_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs):
         """
