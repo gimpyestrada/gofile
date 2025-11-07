@@ -120,7 +120,12 @@ class GofileAPI:
             raise ValueError(f"Unsupported HTTP method: {method}")
 
     def _handle_rate_limit(self, attempt: int, max_retries: int):
-        """Handle rate limit with exponential backoff."""
+        """Handle rate limit with exponential backoff.
+        
+        Uses exponential backoff (2^attempt * base) to avoid overwhelming the API
+        while giving progressively longer recovery time as failures increase.
+        This is the standard approach for handling rate limits in distributed systems.
+        """
         import time
         
         if attempt < max_retries:
@@ -239,7 +244,8 @@ class GofileAPI:
         
         params = {}
         if password:
-            # If password is provided, hash it with SHA-256
+            # API requires SHA-256 hash, but also accepts pre-hashed passwords
+            # This allows flexibility for callers who already have the hash
             if len(password) != SHA256_HASH_LENGTH:
                 password = hashlib.sha256(password.encode()).hexdigest()
             params['password'] = password
