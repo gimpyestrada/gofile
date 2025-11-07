@@ -106,6 +106,31 @@ class GofileAPI:
             raise GofileAPIError(f"Error: {e}")
 
 
+    def _execute_request(self, method: str, url: str, **kwargs):
+        """Execute HTTP request based on method type."""
+        if method == 'get':
+            return self.session.get(url, timeout=self.timeout, **kwargs)
+        elif method == 'post':
+            return self.session.post(url, timeout=self.timeout, **kwargs)
+        elif method == 'put':
+            return self.session.put(url, timeout=self.timeout, **kwargs)
+        elif method == 'delete':
+            return self.session.delete(url, timeout=self.timeout, **kwargs)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+
+    def _handle_rate_limit(self, attempt: int, max_retries: int):
+        """Handle rate limit with exponential backoff."""
+        import time
+        
+        if attempt < max_retries:
+            wait_time = (2 ** attempt) * BACKOFF_BASE_SECONDS
+            print(f"⚠ Rate limit (429) - Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+            time.sleep(wait_time)
+            return True
+        else:
+            raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes.")
+
     def _make_request_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs):
         """
         Make an API request with automatic retry on rate limit (429).
@@ -119,33 +144,14 @@ class GofileAPI:
         Returns:
             Response data
         """
-        import time
-        
         for attempt in range(max_retries + 1):
             try:
-                # Make the request
-                if method == 'get':
-                    response = self.session.get(url, timeout=self.timeout, **kwargs)
-                elif method == 'post':
-                    response = self.session.post(url, timeout=self.timeout, **kwargs)
-                elif method == 'put':
-                    response = self.session.put(url, timeout=self.timeout, **kwargs)
-                elif method == 'delete':
-                    response = self.session.delete(url, timeout=self.timeout, **kwargs)
-                else:
-                    raise ValueError(f"Unsupported HTTP method: {method}")
+                response = self._execute_request(method, url, **kwargs)
                 
-                # Check for rate limit before processing response
                 if response.status_code == 429:
-                    if attempt < max_retries:
-                        wait_time = (2 ** attempt) * BACKOFF_BASE_SECONDS
-                        print(f"⚠ Rate limit (429) - Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes.")
+                    self._handle_rate_limit(attempt, max_retries)
+                    continue
                 
-                # Process successful response
                 return self._handle_response(response)
 
             except RateLimitException:
