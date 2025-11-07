@@ -25,6 +25,16 @@ class DragDropUploader:
     FOLDER_CACHE_FILE = "folder_structure_cache.json"
     CACHE_EXPIRY_HOURS = 24
     
+    # Window dimensions
+    NORMAL_MODE_WIDTH = 700
+    NORMAL_MODE_HEIGHT = 600
+    MINI_MODE_WIDTH = 200
+    MINI_MODE_HEIGHT = 190
+    
+    # API delays (seconds)
+    API_FOLDER_CREATE_DELAY = 2
+    API_FOLDER_UPDATE_DELAY = 1
+    
     def __init__(self):
         """Initialize the uploader."""
         self.api = None
@@ -200,7 +210,7 @@ class DragDropUploader:
             # Add to structure
             self.folder_structure[package] = parent_id
             
-            time.sleep(2)
+            time.sleep(self.API_FOLDER_CREATE_DELAY)
             return parent_id
             
         except Exception as e:
@@ -246,7 +256,7 @@ class DragDropUploader:
             
             self.log(f"Created version folder with ID: {version_id}", "SUCCESS")
             
-            time.sleep(2)
+            time.sleep(self.API_FOLDER_CREATE_DELAY)
             return version_id
             
         except Exception as e:
@@ -267,7 +277,7 @@ class DragDropUploader:
         try:
             self.log("Setting folder to public...")
             self.api.update_content(folder_id, 'public', 'true')
-            time.sleep(1)
+            time.sleep(self.API_FOLDER_UPDATE_DELAY)
             return True
         except Exception as e:
             self.log(f"Error making folder public: {e}", "ERROR")
@@ -498,13 +508,13 @@ class DragDropUploader:
             # Switch to mini mode
             self.main_frame.grid_remove()
             self.mini_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-            self.root.geometry("200x190")
+            self.root.geometry(f"{self.MINI_MODE_WIDTH}x{self.MINI_MODE_HEIGHT}")
             self.root.attributes('-topmost', True)
         else:
             # Switch to normal mode
             self.mini_frame.grid_remove()
             self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-            self.root.geometry("700x600")
+            self.root.geometry(f"{self.NORMAL_MODE_WIDTH}x{self.NORMAL_MODE_HEIGHT}")
             self.root.attributes('-topmost', False)
     
     def run(self) -> None:
@@ -515,7 +525,7 @@ class DragDropUploader:
             # Recreate root with DnD support
             self.root = TkinterDnD.Tk()
             self.root.title("Gofile Drag & Drop Uploader")
-            self.root.geometry("700x600")
+            self.root.geometry(f"{self.NORMAL_MODE_WIDTH}x{self.NORMAL_MODE_HEIGHT}")
             
             # Create mini mode variable after root window
             self.mini_mode = tk.BooleanVar(value=False)
