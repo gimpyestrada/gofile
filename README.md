@@ -295,7 +295,11 @@ except Exception as e:
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## 📄 License
+## �️ Development
+
+This project uses GitHub Copilot to assist with code generation and optimization. All code has been reviewed and tested before deployment.
+
+## �📄 License
 
 MIT License - Feel free to use, modify, and distribute!
 
