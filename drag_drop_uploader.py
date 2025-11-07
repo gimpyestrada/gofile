@@ -311,6 +311,18 @@ class DragDropUploader:
         
         try:
             file_path = file_path.strip()
+            
+            # Validate file existence
+            if not os.path.exists(file_path):
+                self.log(f"File not found: {file_path}", "ERROR")
+                self.update_status("Ready - Drop APK file here")
+                return
+            
+            if not os.path.isfile(file_path):
+                self.log(f"Not a file: {file_path}", "ERROR")
+                self.update_status("Ready - Drop APK file here")
+                return
+            
             filename = os.path.basename(file_path)
             
             self.log("=" * 50)
