@@ -76,9 +76,12 @@ class DragDropUploader:
                 self.log_text.tag_add("error", line_start, line_end)
     
     def update_status(self, message: str):
-        """Update status label."""
+        """Update status label in both normal and mini mode."""
         if self.status_label:
             self.status_label.config(text=message)
+        if hasattr(self, 'mini_status_label') and self.mini_status_label:
+            core_status = message.split(' - ')[-1] if ' - ' in message else message
+            self.mini_status_label.config(text=core_status)
     
     def parse_apk_filename(self, filename: str) -> Optional[Dict[str, str]]:
         """
