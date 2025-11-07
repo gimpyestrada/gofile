@@ -4,10 +4,11 @@ A Python client for interacting with the Gofile API.
 Supports file uploads, folder management, content operations, and more.
 """
 
-import requests
 import hashlib
-from typing import Optional, List, Dict, Any, Union
 from pathlib import Path
+from typing import Optional, List, Dict, Any, Union
+
+import requests
 
 
 class RateLimitException(Exception):
