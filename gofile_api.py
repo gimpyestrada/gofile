@@ -16,7 +16,22 @@ BACKOFF_BASE_SECONDS = 5
 SHA256_HASH_LENGTH = 64
 
 
-class RateLimitException(Exception):
+class GofileAPIError(Exception):
+    """Base exception for Gofile API errors."""
+    pass
+
+
+class GofileHTTPError(GofileAPIError):
+    """Exception for HTTP-level errors (network, timeout, etc)."""
+    pass
+
+
+class GofileResponseError(GofileAPIError):
+    """Exception for API response errors (invalid status, etc)."""
+    pass
+
+
+class RateLimitException(GofileAPIError):
     """Exception raised when API rate limit is exceeded."""
     pass
 
@@ -69,7 +84,7 @@ class GofileAPI:
             if data.get('status') == 'ok':
                 return data.get('data', {})
             else:
-                raise Exception(f"API Error: {data}")
+                raise GofileResponseError(f"API Error: {data}")
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
                 # Rate limit hit - use exponential backoff
@@ -82,11 +97,13 @@ class GofileAPI:
                     raise RateLimitException(f"Rate limit exceeded. Waited {wait_time}s. Retry attempt {retry_count + 1}/{max_retries}")
                 else:
                     raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes before trying again.")
-            raise Exception(f"HTTP Error: {e}")
+            raise GofileHTTPError(f"HTTP Error: {e}")
         except RateLimitException:
             raise
+        except GofileAPIError:
+            raise
         except Exception as e:
-            raise Exception(f"Error: {e}")
+            raise GofileAPIError(f"Error: {e}")
 
 
     def _make_request_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs):
