@@ -18,22 +18,18 @@ SHA256_HASH_LENGTH = 64
 
 class GofileAPIError(Exception):
     """Base exception for Gofile API errors."""
-    pass
 
 
 class GofileHTTPError(GofileAPIError):
     """Exception for HTTP-level errors (network, timeout, etc)."""
-    pass
 
 
 class GofileResponseError(GofileAPIError):
     """Exception for API response errors (invalid status, etc)."""
-    pass
 
 
 class RateLimitException(GofileAPIError):
     """Exception raised when API rate limit is exceeded."""
-    pass
 
 
 class GofileAPI:
