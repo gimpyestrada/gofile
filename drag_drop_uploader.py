@@ -43,6 +43,10 @@ class DragDropUploader:
         self.cache_data = None
         self.config = None
         
+        # Thread safety
+        self._ready_lock = threading.Lock()
+        self._is_ready = False
+        
         # GUI components
         self.root = None
         self.log_text = None
@@ -88,6 +92,18 @@ class DragDropUploader:
                 line_start = self.log_text.index("end-2c linestart")
                 line_end = self.log_text.index("end-1c lineend")
                 self.log_text.tag_add("error", line_start, line_end)
+    
+    @property
+    def is_ready(self) -> bool:
+        """Thread-safe getter for ready state."""
+        with self._ready_lock:
+            return self._is_ready
+    
+    @is_ready.setter
+    def is_ready(self, value: bool) -> None:
+        """Thread-safe setter for ready state."""
+        with self._ready_lock:
+            self._is_ready = value
     
     def update_status(self, message: str) -> None:
         """Update status label in both normal and mini mode."""
