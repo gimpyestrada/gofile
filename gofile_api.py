@@ -8,8 +8,11 @@ import hashlib
 import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
+from io import BufferedReader
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 # Constants for rate limiting and hashing
@@ -33,6 +36,36 @@ class RateLimitException(GofileAPIError):
     """Exception raised when API rate limit is exceeded."""
 
 
+class ProgressTrackingFile:
+    """
+    Wrapper for file objects that tracks upload progress to prevent timeout
+    on active uploads. Only triggers timeout if no data is being transferred.
+    """
+    
+    def __init__(self, file_obj: BufferedReader, timeout_seconds: int = 60):
+        self.file_obj = file_obj
+        self.timeout_seconds = timeout_seconds
+        self.last_read_time = time.time()
+        
+    def read(self, size: int = -1):
+        """Read data and update progress timestamp."""
+        current_time = time.time()
+        elapsed = current_time - self.last_read_time
+        
+        # Only timeout if no progress for timeout_seconds
+        if elapsed > self.timeout_seconds:
+            raise TimeoutError(f"Upload stalled - no data transferred for {self.timeout_seconds}s")
+        
+        data = self.file_obj.read(size)
+        if data:
+            self.last_read_time = time.time()
+        return data
+    
+    def __getattr__(self, name):
+        """Delegate other attributes to the wrapped file object."""
+        return getattr(self.file_obj, name)
+
+
 class GofileAPI:
     """Client for interacting with the Gofile API."""
 
@@ -51,16 +84,18 @@ class GofileAPI:
         'sa-sao': 'https://upload-sa-sao.gofile.io',
     }
 
-    def __init__(self, api_token: Optional[str] = None, timeout: int = 30):
+    def __init__(self, api_token: Optional[str] = None, timeout: int = 30, upload_stall_timeout: int = 120):
         """
         Initialize the Gofile API client.
 
         Args:
             api_token: Your Gofile API token (optional for guest uploads)
-            timeout: Request timeout in seconds (default: 30)
+            timeout: Request timeout in seconds for non-upload requests (default: 30)
+            upload_stall_timeout: Seconds of no upload progress before timing out (default: 120)
         """
         self.api_token = api_token
         self.timeout = timeout
+        self.upload_stall_timeout = upload_stall_timeout
         self.session = requests.Session()
         if api_token:
             self.session.headers.update({
@@ -189,12 +224,15 @@ class GofileAPI:
             raise ValueError(f"Path is not a file: {file_path}")
 
         with open(file_path, 'rb') as f:
-            files = {'file': (file_path_obj.name, f)}
+            # Wrap file with progress tracker to prevent timeout during active uploads
+            progress_file = ProgressTrackingFile(f, self.upload_stall_timeout)
+            files = {'file': (file_path_obj.name, progress_file)}
             data = {}
             if folder_id:
                 data['folderId'] = folder_id
 
-            response = self.session.post(url, files=files, data=data, timeout=self.timeout)
+            # Use None timeout to disable requests timeout, rely on our progress tracker
+            response = self.session.post(url, files=files, data=data, timeout=None)
             return self._handle_response(response)
 
     # ===== FOLDER OPERATIONS =====
