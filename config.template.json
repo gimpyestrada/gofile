@@ -1,4 +1,8 @@
 {
+  "_comment_gofile": "Gofile configuration",
   "account_id": "YOUR_ACCOUNT_ID_HERE",
-  "api_token": "YOUR_API_TOKEN_HERE"
+  "api_token": "YOUR_API_TOKEN_HERE",
+  
+  "_comment_buzzheavier": "Buzzheavier configuration",
+  "buzzheavier_account_id": "YOUR_ACCOUNT_ID_HERE"
 }

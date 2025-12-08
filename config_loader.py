@@ -76,6 +76,14 @@ class Config:
             raise ValueError("Account ID not found in configuration")
         return account_id
     
+    @property
+    def buzzheavier_account_id(self) -> str:
+        """Get the Buzzheavier account ID."""
+        account_id = self.get('buzzheavier_account_id')
+        if not account_id:
+            raise ValueError("Buzzheavier account ID not found in configuration")
+        return account_id
+    
     def save(self, config_data: Dict[str, str]) -> None:
         """
         Save configuration to file.
