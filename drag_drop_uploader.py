@@ -16,20 +16,33 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 import threading
 from gofile_api import GofileAPI
+from buzzheavier_api import BuzzheavierAPI
 from config_loader import load_config
 
 
 class DragDropUploader:
     """Drag and drop uploader with GUI."""
 
-    FOLDER_CACHE_FILE = "folder_structure_cache.json"
+    # Cache file path - use user's local appdata for persistence
+    @staticmethod
+    def _get_cache_dir():
+        """Get the cache directory path that works for both script and executable."""
+        # Try to get executable directory first (for PyInstaller)
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            # Running as script
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+        return app_dir
+    
     CACHE_EXPIRY_HOURS = 24
 
     # Window dimensions
-    NORMAL_MODE_WIDTH = 700
+    NORMAL_MODE_WIDTH = 900
     NORMAL_MODE_HEIGHT = 600
     MINI_MODE_WIDTH = 200
-    MINI_MODE_HEIGHT = 190
+    MINI_MODE_HEIGHT = 320
 
     # API delays (seconds)
     API_FOLDER_CREATE_DELAY = 2
@@ -37,21 +50,43 @@ class DragDropUploader:
 
     def __init__(self):
         """Initialize the uploader."""
+        # Set cache file path
+        self.FOLDER_CACHE_FILE = os.path.join(self._get_cache_dir(), "folder_structure_cache.json")
+        # Gofile API
         self.api = None
         self.root_folder_id = None
         self.folder_structure = {}  # package -> parent_folder_id
+        
+        # Buzzheavier API
+        self.buzzheavier_api = None
+        self.buzzheavier_root_folder_id = None
+        self.buzzheavier_folder_structure = {}  # package -> parent_folder_id
+        
+        # Cache and config
         self.cache_data = None
         self.config = None
 
         # Thread safety
         self._ready_lock = threading.Lock()
         self._is_ready = False
+        self._gofile_ready = False
+        self._buzzheavier_ready = False
+
+        # Upload tracking for retry functionality
+        self.last_upload_file_path = None
+        self.last_upload_parsed_info = None
 
         # GUI components
         self.root = None
-        self.log_text = None
+        self.log_text = None  # Keep for backward compatibility (maps to gofile_log_text)
+        self.gofile_log_text = None
+        self.buzzheavier_log_text = None
         self.status_label = None
-        self.link_entry = None
+        self.gofile_status_label = None
+        self.buzzheavier_status_label = None
+        self.link_entry = None  # Keep for backward compatibility (maps to gofile_link_entry)
+        self.gofile_link_entry = None
+        self.buzzheavier_link_entry = None
         self.is_ready = False
         self.mini_mode = None  # Will be set after root window created
 
@@ -61,8 +96,9 @@ class DragDropUploader:
         self.link_frame = None
         self.log_frame = None
         self.mini_frame = None
+        self.mini_status_label = None
 
-    def log(self, message: str, level: str = "INFO") -> None:
+    def log(self, message: str, level: str = "INFO", host: str = "both") -> None:
         """
         Log a message to both the GUI and console.
 
@@ -73,25 +109,40 @@ class DragDropUploader:
         level : str, optional
             The log level for color coding. Valid values are 'INFO',
             'SUCCESS', 'ERROR', 'WARNING'. Default is 'INFO'.
+        host : str, optional
+            Which host log to write to: 'gofile', 'buzzheavier', or 'both'.
+            Default is 'both'.
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_msg = f"[{timestamp}] {message}\n"
 
         print(message)
 
-        if self.log_text:
-            self.log_text.insert(tk.END, formatted_msg)
-            self.log_text.see(tk.END)
+        # Helper function to add message to a log widget
+        def add_to_log(log_widget):
+            if log_widget:
+                log_widget.insert(tk.END, formatted_msg)
+                log_widget.see(tk.END)
 
-            # Color coding
-            if level == "SUCCESS":
-                line_start = self.log_text.index("end-2c linestart")
-                line_end = self.log_text.index("end-1c lineend")
-                self.log_text.tag_add("success", line_start, line_end)
-            elif level == "ERROR":
-                line_start = self.log_text.index("end-2c linestart")
-                line_end = self.log_text.index("end-1c lineend")
-                self.log_text.tag_add("error", line_start, line_end)
+                # Color coding
+                if level == "SUCCESS":
+                    line_start = log_widget.index("end-2c linestart")
+                    line_end = log_widget.index("end-1c lineend")
+                    log_widget.tag_add("success", line_start, line_end)
+                elif level == "ERROR":
+                    line_start = log_widget.index("end-2c linestart")
+                    line_end = log_widget.index("end-1c lineend")
+                    log_widget.tag_add("error", line_start, line_end)
+
+        # Route to appropriate log(s)
+        if host == "gofile" or host == "both":
+            add_to_log(self.gofile_log_text)
+        if host == "buzzheavier" or host == "both":
+            add_to_log(self.buzzheavier_log_text)
+        
+        # Backward compatibility: if old log_text exists and is different from gofile_log_text
+        if self.log_text and self.log_text != self.gofile_log_text:
+            add_to_log(self.log_text)
 
     @property
     def is_ready(self) -> bool:
@@ -148,8 +199,52 @@ class DragDropUploader:
 
         return None
 
+    def save_folder_cache(self, host: str, root_folder_id: str, folders: Dict) -> None:
+        """
+        Save folder structure to cache for a specific host.
+        
+        Parameters
+        ----------
+        host : str
+            The host name ('gofile' or 'buzzheavier').
+        root_folder_id : str
+            The root folder ID for this host.
+        folders : Dict
+            The folder structure data to cache.
+        """
+        cache_path = Path(self.FOLDER_CACHE_FILE)
+        
+        # Load existing cache or create new structure
+        if cache_path.exists():
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    cache_data = json.load(f)
+            except (json.JSONDecodeError, OSError, IOError):
+                cache_data = {}
+        else:
+            cache_data = {}
+        
+        # Update host-specific data
+        cache_data[host] = {
+            'timestamp': datetime.now().isoformat(),
+            'root_folder_id': root_folder_id,
+            'folders': folders
+        }
+        
+        # Save to file
+        try:
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, indent=2, ensure_ascii=False)
+            self.log(f"Saved {host} cache with {len(folders)} folders", "SUCCESS", host=host)
+        except (OSError, IOError) as e:
+            self.log(f"Error saving {host} cache: {e}", "ERROR", host=host)
+
     def load_folder_cache(self) -> Optional[Dict]:
-        """Load cached folder structure."""
+        """
+        Load cached folder structure.
+        Supports both old single-host and new dual-host formats.
+        Migrates old format to new format automatically.
+        """
         cache_path = Path(self.FOLDER_CACHE_FILE)
 
         if not cache_path.exists():
@@ -159,69 +254,141 @@ class DragDropUploader:
             with open(cache_path, 'r', encoding='utf-8') as f:
                 cache_data = json.load(f)
 
-            cache_time = datetime.fromisoformat(cache_data.get('timestamp', ''))
-            cache_age = datetime.now() - cache_time
-
-            if cache_age > timedelta(hours=self.CACHE_EXPIRY_HOURS):
-                return None
-
-            if cache_data.get('root_folder_id') != self.root_folder_id:
-                return None
+            # Check if this is old format (has 'timestamp' at root level)
+            if 'timestamp' in cache_data and 'gofile' not in cache_data:
+                self.log("Migrating old cache format to dual-host structure...")
+                # Migrate: wrap old data under 'gofile' key
+                old_data = cache_data.copy()
+                cache_data = {
+                    'gofile': old_data
+                }
+                # Save migrated format
+                try:
+                    with open(cache_path, 'w', encoding='utf-8') as f:
+                        json.dump(cache_data, f, indent=2, ensure_ascii=False)
+                    self.log("Cache migration complete", "SUCCESS")
+                except (OSError, IOError) as e:
+                    self.log(f"Warning: Could not save migrated cache: {e}", "WARNING")
 
             return cache_data
 
-        except Exception as e:
+        except (json.JSONDecodeError, OSError, IOError) as e:
             self.log(f"Error loading cache: {e}", "ERROR")
             return None
 
-    def build_folder_structure(self) -> None:
-        """Build mapping of package names to parent folder IDs."""
-        self.log("Building folder structure...")
-
-        self.cache_data = self.load_folder_cache()
-
-        if self.cache_data:
-            self.log("Using cached folder structure")
-            folders = self.cache_data.get('folders', {})
-
-            for folder_id, folder_info in folders.items():
-                parsed = folder_info.get('parsed', {})
-                folder_type = parsed.get('type')
-
-                if folder_type == 'parent':
-                    package = parsed.get('package')
-                    if package:
-                        self.folder_structure[package] = folder_id
-
-            parent_count = len(self.folder_structure)
-            self.log(f"Loaded {parent_count} parent folders from cache",
-                    "SUCCESS")
-        else:
-            self.log("No cache found - scanning Gofile...")
-
-            try:
-                root_contents = self.api.get_content(self.root_folder_id)
-                children = root_contents.get('children', {})
-
+    def build_folder_structure_for_host(self, host: str, api, root_folder_id: str, folder_structure_dict: Dict) -> None:
+        """
+        Build folder structure for a specific host.
+        
+        Parameters
+        ----------
+        host : str
+            The host name ('gofile' or 'buzzheavier').
+        api : object
+            The API instance (GofileAPI or BuzzheavierAPI).
+        root_folder_id : str
+            The root folder ID for this host.
+        folder_structure_dict : Dict
+            The dictionary to populate with package -> folder_id mappings.
+        """
+        # Check if we have valid cached data for this host
+        if self.cache_data and host in self.cache_data:
+            host_cache = self.cache_data[host]
+            cache_time = datetime.fromisoformat(host_cache.get('timestamp', ''))
+            cache_age = datetime.now() - cache_time
+            
+            # Validate cache
+            if (cache_age <= timedelta(hours=self.CACHE_EXPIRY_HOURS) and
+                host_cache.get('root_folder_id') == root_folder_id):
+                
+                self.log(f"Using cached {host} folder structure", host=host)
+                folders = host_cache.get('folders', {})
+                
+                for folder_id, folder_info in folders.items():
+                    parsed = folder_info.get('parsed', {})
+                    folder_type = parsed.get('type')
+                    
+                    if folder_type == 'parent':
+                        package = parsed.get('package')
+                        if package:
+                            folder_structure_dict[package] = folder_id
+                
+                parent_count = len(folder_structure_dict)
+                self.log(f"Loaded {parent_count} {host} parent folders from cache", "SUCCESS", host=host)
+                return
+        
+        # No valid cache - scan the host
+        self.log(f"No valid {host} cache - scanning folders...", host=host)
+        
+        try:
+            root_contents = api.get_content(root_folder_id)
+            children = root_contents.get('children', {})
+            
+            # Handle both dict format (Gofile) and list format (Buzzheavier)
+            if isinstance(children, dict):
+                # Gofile format: {id: {data}}
                 folders = [
                     (cid, cdata) for cid, cdata in children.items()
-                    if cdata.get('type') == 'folder'
+                    if cdata.get('type') == 'folder' or cdata.get('isDirectory')
                 ]
+            else:
+                # Buzzheavier format: [{id, name, isDirectory, ...}, ...]
+                folders = [
+                    (item.get('id'), item) for item in children
+                    if item.get('isDirectory', False)
+                ]
+            
+            # Build cache data structure
+            cache_folders = {}
+            
+            for folder_id, folder_data in folders:
+                folder_name = folder_data.get('name')
+                
+                # Check if it's a parent folder (package name without version)
+                is_parent = (folder_name.count('.') >= 2 and '-' not in folder_name)
+                if is_parent:
+                    folder_structure_dict[folder_name] = folder_id
+                    # Store in cache format
+                    cache_folders[folder_id] = {
+                        'name': folder_name,
+                        'parsed': {
+                            'type': 'parent',
+                            'package': folder_name
+                        }
+                    }
+            
+            self.log(f"Found {len(folder_structure_dict)} {host} parent folders", "SUCCESS", host=host)
+            
+            # Save to cache
+            self.save_folder_cache(host, root_folder_id, cache_folders)
+            
+        except (KeyError, ValueError, TypeError) as e:
+            self.log(f"Error scanning {host} folders: {e}", "ERROR", host=host)
 
-                for folder_id, folder_data in folders:
-                    folder_name = folder_data.get('name')
+    def build_folder_structure(self) -> None:
+        """Build mapping of package names to parent folder IDs for all hosts."""
+        self.log("Building folder structure...")
 
-                    # Check if it's a parent folder
-                    # (package name without version)
-                    is_parent = (folder_name.count('.') >= 2 and
-                                '-' not in folder_name)
-                    if is_parent:
-                        self.folder_structure[folder_name] = folder_id
+        # Load cache (handles migration from old format)
+        self.cache_data = self.load_folder_cache()
 
-                self.log(f"Found {len(self.folder_structure)} parent folders", "SUCCESS")
-
-            except Exception as e:
-                self.log(f"Error scanning folders: {e}", "ERROR")
+        # Build Gofile structure
+        if self.api and self.root_folder_id:
+            self.build_folder_structure_for_host(
+                'gofile', 
+                self.api, 
+                self.root_folder_id, 
+                self.folder_structure
+            )
+        
+        # Build Buzzheavier structure (when Phase 4 is implemented)
+        if self.buzzheavier_api and self.buzzheavier_root_folder_id:
+            self.build_folder_structure_for_host(
+                'buzzheavier',
+                self.buzzheavier_api,
+                self.buzzheavier_root_folder_id,
+                self.buzzheavier_folder_structure
+            )
 
     def create_parent_folder(self, package: str) -> Optional[str]:
         """
@@ -249,7 +416,7 @@ class DragDropUploader:
             time.sleep(self.API_FOLDER_CREATE_DELAY)
             return parent_id
 
-        except Exception as e:
+        except (KeyError, ValueError, RuntimeError) as e:
             self.log(f"Error creating parent folder: {e}", "ERROR")
             return None
 
@@ -300,7 +467,7 @@ class DragDropUploader:
             time.sleep(self.API_FOLDER_CREATE_DELAY)
             return version_id
 
-        except Exception as e:
+        except (KeyError, ValueError, RuntimeError) as e:
             self.log(f"Error with version folder: {e}", "ERROR")
             warning_msg = ("This may indicate the parent folder no longer "
                           "exists or the cache is stale")
@@ -326,7 +493,7 @@ class DragDropUploader:
             self.api.update_content(folder_id, 'public', 'true')
             time.sleep(self.API_FOLDER_UPDATE_DELAY)
             return True
-        except Exception as e:
+        except (KeyError, ValueError, RuntimeError) as e:
             self.log(f"Error making folder public: {e}", "ERROR")
             return False
 
@@ -356,17 +523,192 @@ class DragDropUploader:
             else:
                 return None
 
-        except Exception as e:
+        except (KeyError, ValueError, RuntimeError) as e:
             self.log(f"Error getting folder link: {e}", "ERROR")
+            return None
+
+    def _update_link_entry(self, entry_widget, link: str) -> None:
+        """Thread-safe helper to update a link entry widget."""
+        entry_widget.delete(0, tk.END)
+        entry_widget.insert(0, link)
+
+    def _update_status_emoji(self, host: str, emoji: str) -> None:
+        """Thread-safe helper to update status label emoji."""
+        if host == "gofile" and self.gofile_status_label:
+            self.root.after(0, lambda: self.gofile_status_label.config(text=f"{emoji} Gofile:"))
+        elif host == "buzzheavier" and self.buzzheavier_status_label:
+            self.root.after(0, lambda: self.buzzheavier_status_label.config(text=f"{emoji} Buzzheavier:"))
+
+    def _upload_to_gofile(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
+        """
+        Upload file to Gofile.
+        
+        Parameters
+        ----------
+        file_path : str
+            Path to the file
+        package : str
+            Package name
+        version : str
+            Version string
+        full_name : str
+            Full folder name (package-version-suffix)
+            
+        Returns
+        -------
+        Optional[str]
+            Public link if successful, None otherwise
+        """
+        try:
+            # Get or create parent folder
+            parent_id = self.folder_structure.get(package)
+
+            if not parent_id:
+                self.log(f"No parent folder found for {package}", "WARNING", host="gofile")
+                parent_id = self.create_parent_folder(package)
+                if not parent_id:
+                    self.log("Failed to create parent folder", "ERROR", host="gofile")
+                    return None
+            else:
+                self.log(f"Found parent folder: {package}", host="gofile")
+
+            # Create or get version folder
+            version_id = self.create_version_folder(parent_id, full_name)
+            if not version_id:
+                self.log("Failed to create/get version folder", "ERROR", host="gofile")
+                return None
+
+            # Upload file
+            file_size_bytes = os.path.getsize(file_path)
+            file_size_mb = file_size_bytes / (1024 * 1024)
+            self.log(f"Uploading ({round(file_size_mb)} MB)...", host="gofile")
+
+            start_time = time.time()
+            self.api.upload_file(file_path, folder_id=version_id)
+            upload_time = time.time() - start_time
+
+            upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
+            self.log(f"Upload complete! ({upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps)", "SUCCESS", host="gofile")
+
+            # Make folder public and get link
+            self.log("Making folder public...", host="gofile")
+            if self.make_folder_public(version_id):
+                self.log("Folder is now public", "SUCCESS", host="gofile")
+
+            self.log("Getting public link...", host="gofile")
+            link = self.get_folder_link(version_id)
+
+            if link:
+                self.log("Public link ready", "SUCCESS", host="gofile")
+                # Update link entry immediately (thread-safe GUI update)
+                if self.gofile_link_entry:
+                    self.root.after(0, lambda: self._update_link_entry(self.gofile_link_entry, link))
+                # Update status to success
+                self._update_status_emoji("gofile", "🟢")
+                return link
+            else:
+                self.log("Could not retrieve public link", "ERROR", host="gofile")
+                self._update_status_emoji("gofile", "🔴")
+                return None
+
+        except (OSError, IOError, RuntimeError, KeyError) as e:
+            self.log(f"Upload failed: {e}", "ERROR", host="gofile")
+            self._update_status_emoji("gofile", "🔴")
+            return None
+
+    def _upload_to_buzzheavier(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
+        """
+        Upload file to Buzzheavier.
+        
+        Parameters
+        ----------
+        file_path : str
+            Path to the file
+        package : str
+            Package name
+        version : str
+            Version string
+        full_name : str
+            Full folder name (package-version-suffix)
+            
+        Returns
+        -------
+        Optional[str]
+            Public link if successful, None otherwise
+        """
+        try:
+            # Get or create parent folder
+            parent_id = self.buzzheavier_folder_structure.get(package)
+
+            if not parent_id:
+                self.log(f"Creating parent folder: {package}", host="buzzheavier")
+                result = self.buzzheavier_api.create_folder(self.buzzheavier_root_folder_id, package)
+                parent_id = result.get('id')
+                if parent_id:
+                    self.buzzheavier_folder_structure[package] = parent_id
+                    self.log("Created parent folder", "SUCCESS", host="buzzheavier")
+                else:
+                    self.log("Failed to create parent folder", "ERROR", host="buzzheavier")
+                    return None
+            else:
+                self.log(f"Found parent folder: {package}", host="buzzheavier")
+
+            # Check if version folder exists
+            parent_contents = self.buzzheavier_api.get_content(parent_id)
+            children = parent_contents.get('children', [])
+            version_folder = next((c for c in children if c.get('name') == full_name and c.get('isDirectory')), None)
+
+            if version_folder:
+                version_id = version_folder.get('id')
+                self.log(f"Version folder already exists: {full_name}", host="buzzheavier")
+            else:
+                self.log(f"Creating version folder: {full_name}", host="buzzheavier")
+                result = self.buzzheavier_api.create_folder(parent_id, full_name)
+                version_id = result.get('id')
+                if not version_id:
+                    self.log("Failed to create version folder", "ERROR", host="buzzheavier")
+                    return None
+
+            # Upload file
+            file_size_bytes = os.path.getsize(file_path)
+            file_size_mb = file_size_bytes / (1024 * 1024)
+            self.log(f"Uploading ({round(file_size_mb)} MB)...", host="buzzheavier")
+
+            start_time = time.time()
+            result = self.buzzheavier_api.upload_file(file_path, parent_id=version_id)
+            upload_time = time.time() - start_time
+
+            upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
+            self.log(f"Upload complete! ({upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps)", "SUCCESS", host="buzzheavier")
+
+            # Get file ID and generate public link
+            file_id = result.get('id')
+            if file_id:
+                link = f"https://buzzheavier.com/{file_id}"
+                self.log("Public link ready", "SUCCESS", host="buzzheavier")
+                # Update link entry immediately (thread-safe GUI update)
+                if self.buzzheavier_link_entry:
+                    self.root.after(0, lambda: self._update_link_entry(self.buzzheavier_link_entry, link))
+                # Update status to success
+                self._update_status_emoji("buzzheavier", "🟢")
+                return link
+            else:
+                self.log("Could not get file ID", "ERROR", host="buzzheavier")
+                self._update_status_emoji("buzzheavier", "🔴")
+                return None
+
+        except (OSError, IOError, RuntimeError, KeyError) as e:
+            self.log(f"Upload failed: {e}", "ERROR", host="buzzheavier")
+            self._update_status_emoji("buzzheavier", "🔴")
             return None
 
     def upload_file(self, file_path: str) -> None:
         """
-        Upload an APK file to the appropriate Gofile folder structure.
+        Upload an APK file to both Gofile and Buzzheavier in parallel.
 
         This method handles the entire upload workflow including parsing
         the filename, finding/creating folders, uploading the file, and
-        generating a public link.
+        generating public links for both hosts.
 
         Parameters
         ----------
@@ -374,7 +716,12 @@ class DragDropUploader:
             The full path to the APK file to upload.
         """
         self.update_status("Processing...")
-        self.link_entry.delete(0, tk.END)
+        
+        # Clear both link entries
+        if self.gofile_link_entry:
+            self.gofile_link_entry.delete(0, tk.END)
+        if self.buzzheavier_link_entry:
+            self.buzzheavier_link_entry.delete(0, tk.END)
 
         try:
             file_path = file_path.strip()
@@ -411,92 +758,59 @@ class DragDropUploader:
             self.log(f"Package: {package}")
             self.log(f"Version: {version}")
 
-            # Get or create parent folder
-            parent_id = self.folder_structure.get(package)
+            # Store for retry functionality
+            self.last_upload_file_path = file_path
+            self.last_upload_parsed_info = parsed
 
-            if not parent_id:
-                self.log(f"No parent folder found for {package}", "WARNING")
-                parent_id = self.create_parent_folder(package)
+            # Reset status emojis to uploading
+            self._update_status_emoji("gofile", "⏳")
+            self._update_status_emoji("buzzheavier", "⏳")
 
-                if not parent_id:
-                    self.log("Failed to create parent folder", "ERROR")
-                    self.update_status("Ready - Drop APK file here")
-                    return
+            # Upload to both hosts in parallel
+            self.update_status("Uploading to both hosts...")
+
+            gofile_link = None
+            buzzheavier_link = None
+
+            def upload_gofile():
+                nonlocal gofile_link
+                if self.api and self.root_folder_id:
+                    gofile_link = self._upload_to_gofile(file_path, package, version, full_name)
+
+            def upload_buzzheavier():
+                nonlocal buzzheavier_link
+                if self.buzzheavier_api and self.buzzheavier_root_folder_id:
+                    buzzheavier_link = self._upload_to_buzzheavier(file_path, package, version, full_name)
+
+            # Start parallel uploads
+            gofile_thread = threading.Thread(target=upload_gofile)
+            buzzheavier_thread = threading.Thread(target=upload_buzzheavier)
+
+            gofile_thread.start()
+            buzzheavier_thread.start()
+
+            # Wait for both to complete
+            gofile_thread.join()
+            buzzheavier_thread.join()
+
+            # Log completion summary with emoji status
+            self.log("=" * 50)
+            gofile_emoji = "🟢" if gofile_link else "🔴"
+            buzzheavier_emoji = "🟢" if buzzheavier_link else "🔴"
+            
+            success_count = sum([bool(gofile_link), bool(buzzheavier_link)])
+            self.log(f"Gofile: {gofile_emoji} | Buzzheavier: {buzzheavier_emoji}")
+            
+            if success_count == 2:
+                self.log("Upload complete to both hosts!", "SUCCESS")
+            elif success_count == 1:
+                self.log("Upload complete to one host (check logs)", "WARNING")
             else:
-                self.log(f"Found parent folder: {package}")
-
-            # Create or get version folder
-            version_id = self.create_version_folder(parent_id, full_name)
-
-            if not version_id:
-                self.log("Failed to create/get version folder", "ERROR")
-                self.log("Attempting to recreate parent folder...", "WARNING")
-
-                # Try recreating parent folder (cache might be stale)
-                parent_id = self.create_parent_folder(package)
-
-                if parent_id:
-                    retry_msg = ("Parent folder recreated, retrying "
-                                "version folder creation...")
-                    self.log(retry_msg, "INFO")
-                    version_id = self.create_version_folder(parent_id,
-                                                            full_name)
-
-                if not version_id:
-                    self.log("Failed after retry - cannot proceed", "ERROR")
-                    self.update_status("Ready - Drop APK file here")
-                    return
-
-            # Upload file
-            file_size_bytes = os.path.getsize(file_path)
-            file_size_mb = file_size_bytes / (1024 * 1024)
-            self.log(f"Uploading file ({file_size_mb:.2f} MB)...")
-            self.update_status(f"Uploading {filename}...")
-
-            start_time = time.time()
-            result = self.api.upload_file(file_path, folder_id=version_id)
-            upload_time = time.time() - start_time
-
-            # Calculate upload speed
-            # Megabits per second
-            upload_speed_mbps = (file_size_bytes * 8) / (
-                upload_time * 1_000_000
-            )
-            # Megabytes per second
-            upload_speed_MBps = file_size_mb / upload_time
-
-            self.log(f"Upload complete! ({upload_time:.1f} seconds)",
-                    "SUCCESS")
-            speed_msg = (f"Upload speed: {upload_speed_MBps:.2f} MB/s "
-                        f"({upload_speed_mbps:.2f} Mbps)")
-            self.log(speed_msg, "SUCCESS")
-            self.log(f"File ID: {result.get('fileId')}")
-
-            # Make version folder public
-            self.log("Making folder public...")
-            if self.make_folder_public(version_id):
-                self.log("Folder is now public", "SUCCESS")
-
-            # Get public link
-            self.log("Getting public link...")
-            link = self.get_folder_link(version_id)
-
-            if link:
-                self.log(f"Public link: {link}", "SUCCESS")
-                self.link_entry.delete(0, tk.END)
-                self.link_entry.insert(0, link)
-
-                # Copy to clipboard
-                self.root.clipboard_clear()
-                self.root.clipboard_append(link)
-                self.log("Link copied to clipboard!", "SUCCESS")
-            else:
-                self.log("Could not retrieve public link", "ERROR")
-
+                self.log("Upload failed on both hosts", "ERROR")
             self.log("=" * 50)
             self.update_status("Ready - Drop APK file here")
 
-        except Exception as e:
+        except (OSError, IOError, RuntimeError) as e:
             self.log(f"Upload failed: {e}", "ERROR")
             self.update_status("Ready - Drop APK file here")
 
@@ -521,11 +835,17 @@ class DragDropUploader:
             upload_thread.daemon = True
             upload_thread.start()
 
-    def initialize_api(self) -> None:
-        """Initialize Gofile API connection."""
+    def _initialize_gofile(self) -> bool:
+        """
+        Initialize Gofile API connection.
+        
+        Returns
+        -------
+        bool
+            True if initialization successful, False otherwise
+        """
         try:
-            self.log("Connecting to Gofile...")
-            self.config = load_config()
+            self.log("Connecting to Gofile...", host="gofile")
             self.api = GofileAPI(api_token=self.config.api_token)
 
             account_details = self.api.get_account_details(self.config.account_id)
@@ -534,41 +854,187 @@ class DragDropUploader:
             email = account_details.get('email')
             tier = account_details.get('tier')
 
-            self.log(f"Connected to Gofile account", "SUCCESS")
-            self.log(f"Email: {email}")
-            self.log(f"Tier: {tier}")
+            self.log("Connected to Gofile account", "SUCCESS", host="gofile")
+            self.log(f"Email: {email}", host="gofile")
+            self.log(f"Tier: {tier}", host="gofile")
 
-            # Build folder structure
+            return True
+
+        except (RuntimeError, KeyError, ValueError) as e:
+            self.log(f"Failed to connect to Gofile: {e}", "ERROR", host="gofile")
+            return False
+
+    def _initialize_buzzheavier(self) -> bool:
+        """
+        Initialize Buzzheavier API connection.
+        
+        Returns
+        -------
+        bool
+            True if initialization successful, False otherwise
+        """
+        try:
+            self.log("Connecting to Buzzheavier...", host="buzzheavier")
+            self.buzzheavier_api = BuzzheavierAPI(
+                account_id=self.config.buzzheavier_account_id,
+                preferred_location=BuzzheavierAPI.LOCATION_EASTERN_US
+            )
+
+            account_details = self.buzzheavier_api.get_account_details()
+            
+            # Get root directory
+            root_content = self.buzzheavier_api.get_content()
+            self.buzzheavier_root_folder_id = root_content.get('id')
+
+            created_at = account_details.get('createdAt', 'Unknown')
+            locations = account_details.get('locations', [])
+            location_names = ', '.join([loc.get('name', '') for loc in locations])
+
+            self.log("Connected to Buzzheavier account", "SUCCESS", host="buzzheavier")
+            self.log(f"Account created: {created_at}", host="buzzheavier")
+            self.log(f"Available locations: {location_names}", host="buzzheavier")
+
+            return True
+
+        except (RuntimeError, KeyError, ValueError) as e:
+            self.log(f"Failed to connect to Buzzheavier: {e}", "ERROR", host="buzzheavier")
+            return False
+
+    def initialize_api(self) -> None:
+        """Initialize API connections for both hosts in parallel."""
+        try:
+            self.config = load_config()
+
+            # Initialize both APIs in parallel
+            gofile_thread = threading.Thread(target=lambda: setattr(self, '_gofile_ready', self._initialize_gofile()))
+            buzzheavier_thread = threading.Thread(target=lambda: setattr(self, '_buzzheavier_ready', self._initialize_buzzheavier()))
+
+            self._gofile_ready = False
+            self._buzzheavier_ready = False
+
+            gofile_thread.start()
+            buzzheavier_thread.start()
+
+            # Wait for both to complete
+            gofile_thread.join()
+            buzzheavier_thread.join()
+
+            # Build folder structures for successful connections
             self.build_folder_structure()
 
-            self.is_ready = True
-            self.update_status("Ready - Drop APK file here")
-            self.log("=" * 50)
-            self.log("Ready! Drag and drop APK files here", "SUCCESS")
-            self.log("=" * 50)
+            # Set ready if at least one host connected
+            if self._gofile_ready or self._buzzheavier_ready:
+                self.is_ready = True
+                self.update_status("Ready - Drop APK file here")
+                self.log("=" * 50)
+                self.log("Ready! Drag and drop APK files here", "SUCCESS")
+                self.log("=" * 50)
+            else:
+                self.update_status("Error - Check credentials")
+                messagebox.showerror("Connection Error", 
+                                   "Failed to connect to both Gofile and Buzzheavier.\n\n"
+                                   "Check your config.json file.")
 
-        except Exception as e:
-            self.log(f"Failed to connect to Gofile: {e}", "ERROR")
+        except (RuntimeError, KeyError, ValueError, OSError, IOError) as e:
+            self.log(f"Initialization error: {e}", "ERROR")
             self.update_status("Error - Check credentials")
-            error_msg = (f"Failed to connect to Gofile:\n{e}\n\n"
-                        "Check your config.json file.")
-            messagebox.showerror("Connection Error", error_msg)
+            messagebox.showerror("Connection Error", f"Failed to initialize:\n{e}")
 
-    def copy_link(self) -> None:
-        """Copy link to clipboard."""
-        link = self.link_entry.get()
+    def copy_link(self, host: str = "gofile") -> None:
+        """
+        Copy link to clipboard.
+        
+        Parameters
+        ----------
+        host : str
+            Which host link to copy: 'gofile' or 'buzzheavier'
+        """
+        link_entry = self.gofile_link_entry if host == "gofile" else self.buzzheavier_link_entry
+        link = link_entry.get() if link_entry else ""
         if link:
             self.root.clipboard_clear()
             self.root.clipboard_append(link)
-            self.log("Link copied to clipboard!", "SUCCESS")
+            self.log(f"{host.capitalize()} link copied to clipboard!", "SUCCESS", host=host)
 
-    def open_link(self) -> None:
-        """Open link in browser."""
-        link = self.link_entry.get()
+    def open_link(self, host: str = "gofile") -> None:
+        """
+        Open link in browser.
+        
+        Parameters
+        ----------
+        host : str
+            Which host link to open: 'gofile' or 'buzzheavier'
+        """
+        link_entry = self.gofile_link_entry if host == "gofile" else self.buzzheavier_link_entry
+        link = link_entry.get() if link_entry else ""
         if link:
             import webbrowser
             webbrowser.open(link)
-            self.log("Opened link in browser")
+            self.log(f"Opened {host.capitalize()} link in browser", host=host)
+
+    def retry_gofile(self) -> None:
+        """Retry upload to Gofile for the last uploaded file."""
+        if not self.last_upload_file_path or not self.last_upload_parsed_info:
+            self.log("No previous upload to retry", "WARNING", host="gofile")
+            return
+
+        if not self.api or not self.root_folder_id:
+            self.log("Gofile not initialized", "ERROR", host="gofile")
+            return
+
+        self.log("Retrying Gofile upload...", "INFO", host="gofile")
+        
+        # Clear entry and reset status
+        if self.gofile_link_entry:
+            self.gofile_link_entry.delete(0, tk.END)
+        self._update_status_emoji("gofile", "⏳")
+
+        parsed = self.last_upload_parsed_info
+        
+        def retry_thread():
+            link = self._upload_to_gofile(
+                self.last_upload_file_path,
+                parsed['package'],
+                parsed['version'],
+                parsed['full_name']
+            )
+            if not link:
+                self.log("Retry failed", "ERROR", host="gofile")
+
+        thread = threading.Thread(target=retry_thread, daemon=True)
+        thread.start()
+
+    def retry_buzzheavier(self) -> None:
+        """Retry upload to Buzzheavier for the last uploaded file."""
+        if not self.last_upload_file_path or not self.last_upload_parsed_info:
+            self.log("No previous upload to retry", "WARNING", host="buzzheavier")
+            return
+
+        if not self.buzzheavier_api or not self.buzzheavier_root_folder_id:
+            self.log("Buzzheavier not initialized", "ERROR", host="buzzheavier")
+            return
+
+        self.log("Retrying Buzzheavier upload...", "INFO", host="buzzheavier")
+        
+        # Clear entry and reset status
+        if self.buzzheavier_link_entry:
+            self.buzzheavier_link_entry.delete(0, tk.END)
+        self._update_status_emoji("buzzheavier", "⏳")
+
+        parsed = self.last_upload_parsed_info
+        
+        def retry_thread():
+            link = self._upload_to_buzzheavier(
+                self.last_upload_file_path,
+                parsed['package'],
+                parsed['version'],
+                parsed['full_name']
+            )
+            if not link:
+                self.log("Retry failed", "ERROR", host="buzzheavier")
+
+        thread = threading.Thread(target=retry_thread, daemon=True)
+        thread.start()
 
     def register_drop_target(self, widget, dnd_files_constant) -> None:
         """Register a widget as a drag-and-drop target."""
@@ -653,37 +1119,89 @@ class DragDropUploader:
             # Enable drag and drop on drop frame
             self.register_drop_target(self.drop_frame, DND_FILES)
 
-            # Link frame
-            self.link_frame = ttk.LabelFrame(self.main_frame, text="Public Link", padding="10")
+            # Link frame (dual-host)
+            self.link_frame = ttk.LabelFrame(self.main_frame, text="Public Links", padding="10")
             self.link_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-            self.link_frame.columnconfigure(0, weight=1)
+            self.link_frame.columnconfigure(1, weight=1)
 
-            self.link_entry = ttk.Entry(self.link_frame, font=('Arial', 10))
-            self.link_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+            # Gofile row
+            self.gofile_status_label = ttk.Label(self.link_frame, text="🟢 Gofile:", font=('Arial', 9, 'bold'))
+            self.gofile_status_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+            
+            self.gofile_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
+            self.gofile_link_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
+            self.link_entry = self.gofile_link_entry  # Backward compatibility
 
-            link_buttons_frame = ttk.Frame(self.link_frame)
-            link_buttons_frame.grid(row=0, column=1)
+            gofile_buttons = ttk.Frame(self.link_frame)
+            gofile_buttons.grid(row=0, column=2)
 
-            copy_btn = ttk.Button(link_buttons_frame, text="Copy", command=self.copy_link, width=8)
-            copy_btn.grid(row=0, column=0, padx=2)
+            gofile_copy_btn = ttk.Button(gofile_buttons, text="Copy", 
+                                         command=lambda: self.copy_link("gofile"), width=6)
+            gofile_copy_btn.grid(row=0, column=0, padx=2)
 
-            open_btn = ttk.Button(link_buttons_frame, text="Open", command=self.open_link, width=8)
-            open_btn.grid(row=0, column=1, padx=2)
+            gofile_open_btn = ttk.Button(gofile_buttons, text="Open", 
+                                         command=lambda: self.open_link("gofile"), width=6)
+            gofile_open_btn.grid(row=0, column=1, padx=2)
 
-            # Log frame
-            self.log_frame = ttk.LabelFrame(self.main_frame, text="Activity Log", padding="10")
+            gofile_retry_btn = ttk.Button(gofile_buttons, text="Retry", 
+                                          command=self.retry_gofile, width=6)
+            gofile_retry_btn.grid(row=0, column=2, padx=2)
+
+            # Buzzheavier row
+            self.buzzheavier_status_label = ttk.Label(self.link_frame, text="⏳ Buzzheavier:", font=('Arial', 9, 'bold'))
+            self.buzzheavier_status_label.grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0))
+            
+            self.buzzheavier_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
+            self.buzzheavier_link_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
+
+            buzzheavier_buttons = ttk.Frame(self.link_frame)
+            buzzheavier_buttons.grid(row=1, column=2, pady=(5, 0))
+
+            buzzheavier_copy_btn = ttk.Button(buzzheavier_buttons, text="Copy", 
+                                              command=lambda: self.copy_link("buzzheavier"), width=6)
+            buzzheavier_copy_btn.grid(row=0, column=0, padx=2)
+
+            buzzheavier_open_btn = ttk.Button(buzzheavier_buttons, text="Open", 
+                                              command=lambda: self.open_link("buzzheavier"), width=6)
+            buzzheavier_open_btn.grid(row=0, column=1, padx=2)
+
+            buzzheavier_retry_btn = ttk.Button(buzzheavier_buttons, text="Retry", 
+                                               command=self.retry_buzzheavier, width=6)
+            buzzheavier_retry_btn.grid(row=0, column=2, padx=2)
+
+            # Log frame (dual columns)
+            self.log_frame = ttk.LabelFrame(self.main_frame, text="Activity Logs", padding="10")
             self.log_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
             self.log_frame.columnconfigure(0, weight=1)
-            self.log_frame.rowconfigure(0, weight=1)
+            self.log_frame.columnconfigure(1, weight=1)
+            self.log_frame.rowconfigure(1, weight=1)
 
-            self.log_text = scrolledtext.ScrolledText(self.log_frame, height=15,
-                                                      font=('Consolas', 9),
-                                                      wrap=tk.WORD)
-            self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+            # Gofile log column
+            gofile_log_label = ttk.Label(self.log_frame, text="Gofile", font=('Arial', 9, 'bold'))
+            gofile_log_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
 
-            # Color tags
-            self.log_text.tag_config("success", foreground="green")
-            self.log_text.tag_config("error", foreground="red")
+            self.gofile_log_text = scrolledtext.ScrolledText(self.log_frame, height=15,
+                                                             font=('Consolas', 8),
+                                                             wrap=tk.WORD)
+            self.gofile_log_text.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
+            self.log_text = self.gofile_log_text  # Backward compatibility
+
+            # Color tags for Gofile log
+            self.gofile_log_text.tag_config("success", foreground="green")
+            self.gofile_log_text.tag_config("error", foreground="red")
+
+            # Buzzheavier log column
+            buzzheavier_log_label = ttk.Label(self.log_frame, text="Buzzheavier", font=('Arial', 9, 'bold'))
+            buzzheavier_log_label.grid(row=0, column=1, sticky=tk.W, pady=(0, 5))
+
+            self.buzzheavier_log_text = scrolledtext.ScrolledText(self.log_frame, height=15,
+                                                                  font=('Consolas', 8),
+                                                                  wrap=tk.WORD)
+            self.buzzheavier_log_text.grid(row=1, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+            # Color tags for Buzzheavier log
+            self.buzzheavier_log_text.tag_config("success", foreground="green")
+            self.buzzheavier_log_text.tag_config("error", foreground="red")
 
             # ===== MINI FRAME (Mini Mode) =====
             self.mini_frame = ttk.Frame(self.root, padding="10")
@@ -718,19 +1236,46 @@ class DragDropUploader:
             self.register_drop_target(mini_drop_frame, DND_FILES)
             self.register_drop_target(mini_drop_label, DND_FILES)
 
-            # Mini buttons frame
-            mini_buttons = ttk.Frame(self.mini_frame)
-            mini_buttons.grid(row=1, column=0, pady=(5, 0))
+            # Mini link sections (dual-host stacked)
+            mini_links_frame = ttk.Frame(self.mini_frame)
+            mini_links_frame.grid(row=1, column=0, pady=(5, 0), sticky=(tk.W, tk.E))
+            mini_links_frame.columnconfigure(0, weight=1)
 
-            mini_copy_btn = ttk.Button(mini_buttons, text="Copy Link",
-                                      command=self.copy_link, width=10)
-            mini_copy_btn.grid(row=0, column=0, padx=2)
+            # Gofile mini section
+            mini_gofile_label = ttk.Label(mini_links_frame, text="🟢 Gofile", font=('Arial', 8, 'bold'))
+            mini_gofile_label.grid(row=0, column=0, sticky=tk.W)
+
+            mini_gofile_buttons = ttk.Frame(mini_links_frame)
+            mini_gofile_buttons.grid(row=1, column=0, pady=(2, 5))
+
+            mini_gofile_copy = ttk.Button(mini_gofile_buttons, text="Copy",
+                                         command=lambda: self.copy_link("gofile"), width=8)
+            mini_gofile_copy.grid(row=0, column=0, padx=2)
+
+            mini_gofile_open = ttk.Button(mini_gofile_buttons, text="Open",
+                                         command=lambda: self.open_link("gofile"), width=8)
+            mini_gofile_open.grid(row=0, column=1, padx=2)
+
+            # Buzzheavier mini section
+            mini_buzzheavier_label = ttk.Label(mini_links_frame, text="⏳ Buzzheavier", font=('Arial', 8, 'bold'))
+            mini_buzzheavier_label.grid(row=2, column=0, sticky=tk.W)
+
+            mini_buzzheavier_buttons = ttk.Frame(mini_links_frame)
+            mini_buzzheavier_buttons.grid(row=3, column=0, pady=(2, 5))
+
+            mini_buzzheavier_copy = ttk.Button(mini_buzzheavier_buttons, text="Copy",
+                                              command=lambda: self.copy_link("buzzheavier"), width=8)
+            mini_buzzheavier_copy.grid(row=0, column=0, padx=2)
+
+            mini_buzzheavier_open = ttk.Button(mini_buzzheavier_buttons, text="Open",
+                                              command=lambda: self.open_link("buzzheavier"), width=8)
+            mini_buzzheavier_open.grid(row=0, column=1, padx=2)
 
             # Normal mode checkbox
-            normal_check = ttk.Checkbutton(mini_buttons, text="Normal",
+            normal_check = ttk.Checkbutton(mini_links_frame, text="Normal Mode",
                                           variable=self.mini_mode,
                                           command=self.toggle_mini_mode)
-            normal_check.grid(row=0, column=1, padx=2)
+            normal_check.grid(row=4, column=0, pady=(5, 0))
 
             # Start in normal mode (hide mini frame)
             self.mini_frame.grid_remove()
