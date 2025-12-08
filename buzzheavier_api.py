@@ -115,14 +115,14 @@ class BuzzheavierAPI:
             
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
-                raise RateLimitException(f"Rate limit exceeded: {e}")
-            raise BuzzheavierHTTPError(f"HTTP Error: {e}")
+                raise RateLimitException(f"Rate limit exceeded: {e}") from e
+            raise BuzzheavierHTTPError(f"HTTP Error: {e}") from e
         except RateLimitException:
             raise
         except BuzzheavierAPIError:
             raise
         except Exception as e:
-            raise BuzzheavierAPIError(f"Error: {e}")
+            raise BuzzheavierAPIError(f"Error: {e}") from e
 
     def _execute_request(self, method: str, url: str, **kwargs):
         """Execute HTTP request based on method type."""
