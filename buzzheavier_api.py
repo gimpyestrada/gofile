@@ -12,8 +12,10 @@ from io import BufferedReader
 import requests
 
 
-# Constants for rate limiting
+# Constants for rate limiting and retry
 BACKOFF_BASE_SECONDS = 5
+UPLOAD_MAX_RETRIES = 3
+UPLOAD_RETRY_DELAY = 3
 
 
 class BuzzheavierAPIError(Exception):
@@ -30,6 +32,10 @@ class BuzzheavierResponseError(BuzzheavierAPIError):
 
 class RateLimitException(BuzzheavierAPIError):
     """Exception raised when API rate limit is exceeded."""
+
+
+class NetworkException(BuzzheavierAPIError):
+    """Exception raised for transient network errors that may be retryable."""
 
 
 class ProgressTrackingFile:
@@ -191,14 +197,16 @@ class BuzzheavierAPI:
     def upload_file(self,
                     file_path: str,
                     parent_id: Optional[str] = None,
-                    location_id: Optional[str] = None) -> Dict[str, Any]:
+                    location_id: Optional[str] = None,
+                    max_retries: int = UPLOAD_MAX_RETRIES) -> Dict[str, Any]:
         """
-        Upload a file to Buzzheavier.
+        Upload a file to Buzzheavier with automatic retry on network errors.
 
         Args:
             file_path: Path to the file to upload
             parent_id: Destination parent directory ID (optional, uploads to root if not provided)
             location_id: Upload location ID (optional, uses preferred_location if not specified)
+            max_retries: Maximum retry attempts for network errors (default: 3)
 
         Returns:
             Dictionary containing upload response with file information
@@ -218,14 +226,46 @@ class BuzzheavierAPI:
         else:
             url = f"{self.BASE_UPLOAD_URL}/{file_path_obj.name}?locationId={upload_location}"
 
-        with open(file_path, 'rb') as f:
-            # Wrap file with progress tracker to prevent timeout during active uploads
-            progress_file = ProgressTrackingFile(f, self.upload_stall_timeout)
+        # Retry loop for transient network errors
+        last_exception = None
+        for attempt in range(max_retries + 1):
+            try:
+                with open(file_path, 'rb') as f:
+                    # Wrap file with progress tracker to prevent timeout during active uploads
+                    progress_file = ProgressTrackingFile(f, self.upload_stall_timeout)
+                    
+                    # Use PUT method for Buzzheavier upload
+                    # Use None timeout to disable requests timeout, rely on our progress tracker
+                    response = self.session.put(url, data=progress_file, timeout=None)
+                    return self._handle_response(response)
+                    
+            except (ConnectionError, ConnectionResetError, ConnectionAbortedError, 
+                    TimeoutError, OSError) as e:
+                last_exception = e
+                error_msg = str(e)
+                
+                # Check if this is the last attempt
+                if attempt < max_retries:
+                    wait_time = UPLOAD_RETRY_DELAY * (attempt + 1)
+                    print(f"⚠ Network error during upload: {error_msg}")
+                    print(f"   Retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # All retries exhausted
+                    raise NetworkException(
+                        f"Upload failed after {max_retries} retries. Last error: {error_msg}"
+                    ) from e
             
-            # Use PUT method for Buzzheavier upload
-            # Use None timeout to disable requests timeout, rely on our progress tracker
-            response = self.session.put(url, data=progress_file, timeout=None)
-            return self._handle_response(response)
+            except Exception as e:
+                # Non-retryable errors (permissions, file not found, API errors, etc.)
+                raise
+        
+        # This should not be reached, but just in case
+        if last_exception:
+            raise NetworkException(
+                f"Upload failed after {max_retries} retries"
+            ) from last_exception
 
     # ===== FOLDER OPERATIONS =====
 
