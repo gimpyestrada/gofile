@@ -4,5 +4,12 @@
   "api_token": "YOUR_API_TOKEN_HERE",
   
   "_comment_buzzheavier": "Buzzheavier configuration",
-  "buzzheavier_account_id": "YOUR_ACCOUNT_ID_HERE"
+  "buzzheavier_account_id": "YOUR_ACCOUNT_ID_HERE",
+  
+  "_comment_pixeldrain": "Pixeldrain configuration",
+  "pixeldrain_api_key": "YOUR_API_KEY_HERE",
+  
+  "gofile_enabled": true,
+  "buzzheavier_enabled": true,
+  "pixeldrain_enabled": true
 }

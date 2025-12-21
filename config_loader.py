@@ -84,6 +84,14 @@ class Config:
             raise ValueError("Buzzheavier account ID not found in configuration")
         return account_id
     
+    @property
+    def pixeldrain_api_key(self) -> str:
+        """Get the Pixeldrain API key."""
+        api_key = self.get('pixeldrain_api_key')
+        if not api_key:
+            raise ValueError("Pixeldrain API key not found in configuration")
+        return api_key
+    
     def save(self, config_data: Dict[str, str]) -> None:
         """
         Save configuration to file.
