@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 import threading
 from gofile_api import GofileAPI
-from buzzheavier_api import BuzzheavierAPI
+from buzzheavier_api import BuzzheavierAPI, NetworkException
 from config_loader import load_config
 
 
@@ -40,7 +40,7 @@ class DragDropUploader:
 
     # Window dimensions
     NORMAL_MODE_WIDTH = 900
-    NORMAL_MODE_HEIGHT = 600
+    NORMAL_MODE_HEIGHT = 650
     MINI_MODE_WIDTH = 200
     MINI_MODE_HEIGHT = 320
 
@@ -62,6 +62,10 @@ class DragDropUploader:
         self.buzzheavier_root_folder_id = None
         self.buzzheavier_folder_structure = {}  # package -> parent_folder_id
         
+        # Pixeldrain API
+        self.pixeldrain_api = None
+        self.pixeldrain_folder_structure = {}  # package -> list_id
+        
         # Cache and config
         self.cache_data = None
         self.config = None
@@ -71,22 +75,31 @@ class DragDropUploader:
         self._is_ready = False
         self._gofile_ready = False
         self._buzzheavier_ready = False
+        self._pixeldrain_ready = False
 
         # Upload tracking for retry functionality
         self.last_upload_file_path = None
         self.last_upload_parsed_info = None
+        
+        # Host toggle settings
+        self.gofile_enabled = None
+        self.buzzheavier_enabled = None
+        self.pixeldrain_enabled = None
 
         # GUI components
         self.root = None
         self.log_text = None  # Keep for backward compatibility (maps to gofile_log_text)
         self.gofile_log_text = None
         self.buzzheavier_log_text = None
+        self.pixeldrain_log_text = None
         self.status_label = None
         self.gofile_status_label = None
         self.buzzheavier_status_label = None
+        self.pixeldrain_status_label = None
         self.link_entry = None  # Keep for backward compatibility (maps to gofile_link_entry)
         self.gofile_link_entry = None
         self.buzzheavier_link_entry = None
+        self.pixeldrain_link_entry = None
         self.is_ready = False
         self.mini_mode = None  # Will be set after root window created
 
@@ -97,6 +110,26 @@ class DragDropUploader:
         self.log_frame = None
         self.mini_frame = None
         self.mini_status_label = None
+        
+        # Store log column widgets for dynamic visibility
+        self.gofile_log_label = None
+        self.buzzheavier_log_label = None
+        self.pixeldrain_log_label = None
+        
+        # Store button frames for dynamic visibility
+        self.gofile_buttons_frame = None
+        self.buzzheavier_buttons_frame = None
+        self.pixeldrain_buttons_frame = None
+        
+        # Store status indicator labels (separate from name labels)
+        self.gofile_status_indicator = None
+        self.buzzheavier_status_indicator = None
+        self.pixeldrain_status_indicator = None
+        
+        # Store status frames (contain indicator + name)
+        self.gofile_status_frame = None
+        self.buzzheavier_status_frame = None
+        self.pixeldrain_status_frame = None
 
     def log(self, message: str, level: str = "INFO", host: str = "both") -> None:
         """
@@ -110,7 +143,7 @@ class DragDropUploader:
             The log level for color coding. Valid values are 'INFO',
             'SUCCESS', 'ERROR', 'WARNING'. Default is 'INFO'.
         host : str, optional
-            Which host log to write to: 'gofile', 'buzzheavier', or 'both'.
+            Which host log to write to: 'gofile', 'buzzheavier', 'pixeldrain', or 'both'.
             Default is 'both'.
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -139,6 +172,8 @@ class DragDropUploader:
             add_to_log(self.gofile_log_text)
         if host == "buzzheavier" or host == "both":
             add_to_log(self.buzzheavier_log_text)
+        if host == "pixeldrain":
+            add_to_log(self.pixeldrain_log_text)
         
         # Backward compatibility: if old log_text exists and is different from gofile_log_text
         if self.log_text and self.log_text != self.gofile_log_text:
@@ -164,6 +199,160 @@ class DragDropUploader:
             core_status = message.split(' - ')[-1] if ' - ' in message else message
             self.mini_status_label.config(text=core_status)
 
+    def save_host_settings(self) -> None:
+        """Save enabled host settings to config.json."""
+        if self.config and self.gofile_enabled and self.buzzheavier_enabled and self.pixeldrain_enabled:
+            try:
+                self.config.update('gofile_enabled', self.gofile_enabled.get())
+                self.config.update('buzzheavier_enabled', self.buzzheavier_enabled.get())
+                self.config.update('pixeldrain_enabled', self.pixeldrain_enabled.get())
+                
+                # Call visibility update after saving settings
+                self.update_visibility()
+            except Exception as e:
+                print(f"Error saving host settings: {e}")
+    
+    def load_host_settings(self) -> None:
+        """Load enabled host settings from config.json."""
+        if self.config:
+            # Default: gofile only if no settings exist
+            gofile_enabled = self.config.get('gofile_enabled')
+            if gofile_enabled is None:
+                gofile_enabled = True
+            
+            buzzheavier_enabled = self.config.get('buzzheavier_enabled', False)
+            pixeldrain_enabled = self.config.get('pixeldrain_enabled', False)
+            
+            if self.gofile_enabled:
+                self.gofile_enabled.set(gofile_enabled)
+            if self.buzzheavier_enabled:
+                self.buzzheavier_enabled.set(buzzheavier_enabled)
+            if self.pixeldrain_enabled:
+                self.pixeldrain_enabled.set(pixeldrain_enabled)
+    
+    def show_settings_menu(self) -> None:
+        """Show settings menu with host enable/disable checkboxes."""
+        menu = tk.Menu(self.root, tearoff=0)
+        
+        menu.add_checkbutton(
+            label="Gofile",
+            variable=self.gofile_enabled,
+            command=lambda: self._validate_and_save_host_settings()
+        )
+        menu.add_checkbutton(
+            label="Buzzheavier",
+            variable=self.buzzheavier_enabled,
+            command=lambda: self._validate_and_save_host_settings()
+        )
+        menu.add_checkbutton(
+            label="Pixeldrain",
+            variable=self.pixeldrain_enabled,
+            command=lambda: self._validate_and_save_host_settings()
+        )
+        
+        # Display menu at mouse position
+        try:
+            menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        finally:
+            menu.grab_release()
+    
+    def _validate_and_save_host_settings(self) -> None:
+        """Validate at least one host is enabled before saving."""
+        # Check if at least one host is enabled
+        if not (self.gofile_enabled.get() or self.buzzheavier_enabled.get() or self.pixeldrain_enabled.get()):
+            # Restore the last clicked checkbox (find which one was just unchecked)
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning(
+                "Invalid Settings",
+                "At least one file host must be enabled."
+            )
+            # Re-enable at least gofile
+            self.gofile_enabled.set(True)
+        
+        self.save_host_settings()
+    
+    def update_visibility(self) -> None:
+        """Update visibility of log columns and link rows based on enabled hosts."""
+        if not self.log_frame or not self.link_frame:
+            return
+        
+        # Get enabled hosts in order
+        enabled_hosts = []
+        if self.gofile_enabled.get():
+            enabled_hosts.append(('gofile', self.gofile_log_label, self.gofile_log_text, 
+                                 self.gofile_status_frame, self.gofile_link_entry))
+        if self.buzzheavier_enabled.get():
+            enabled_hosts.append(('buzzheavier', self.buzzheavier_log_label, self.buzzheavier_log_text,
+                                 self.buzzheavier_status_frame, self.buzzheavier_link_entry))
+        if self.pixeldrain_enabled.get():
+            enabled_hosts.append(('pixeldrain', self.pixeldrain_log_label, self.pixeldrain_log_text,
+                                 self.pixeldrain_status_frame, self.pixeldrain_link_entry))
+        
+        # Hide all log widgets
+        if self.gofile_log_label:
+            self.gofile_log_label.grid_remove()
+        if self.gofile_log_text:
+            self.gofile_log_text.grid_remove()
+        if self.buzzheavier_log_label:
+            self.buzzheavier_log_label.grid_remove()
+        if self.buzzheavier_log_text:
+            self.buzzheavier_log_text.grid_remove()
+        if self.pixeldrain_log_label:
+            self.pixeldrain_log_label.grid_remove()
+        if self.pixeldrain_log_text:
+            self.pixeldrain_log_text.grid_remove()
+        
+        # Hide all link rows
+        if self.gofile_status_frame:
+            self.gofile_status_frame.grid_remove()
+        if self.gofile_link_entry:
+            self.gofile_link_entry.grid_remove()
+        if self.gofile_buttons_frame:
+            self.gofile_buttons_frame.grid_remove()
+            
+        if self.buzzheavier_status_frame:
+            self.buzzheavier_status_frame.grid_remove()
+        if self.buzzheavier_link_entry:
+            self.buzzheavier_link_entry.grid_remove()
+        if self.buzzheavier_buttons_frame:
+            self.buzzheavier_buttons_frame.grid_remove()
+            
+        if self.pixeldrain_status_frame:
+            self.pixeldrain_status_frame.grid_remove()
+        if self.pixeldrain_link_entry:
+            self.pixeldrain_link_entry.grid_remove()
+        if self.pixeldrain_buttons_frame:
+            self.pixeldrain_buttons_frame.grid_remove()
+        
+        # Reset column weights
+        for i in range(3):
+            self.log_frame.columnconfigure(i, weight=0)
+        
+        # Show enabled logs and links with new positions
+        for row, (name, label_widget, log_widget, status_frame, link_entry) in enumerate(enabled_hosts):
+            # Show link row
+            if status_frame:
+                status_frame.grid(row=row, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0) if row > 0 else (0, 0))
+            if link_entry:
+                link_entry.grid(row=row, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0) if row > 0 else (0, 0))
+            
+            # Show button frame
+            if name == 'gofile' and self.gofile_buttons_frame:
+                self.gofile_buttons_frame.grid(row=row, column=2, pady=(5, 0) if row > 0 else (0, 0))
+            elif name == 'buzzheavier' and self.buzzheavier_buttons_frame:
+                self.buzzheavier_buttons_frame.grid(row=row, column=2, pady=(5, 0) if row > 0 else (0, 0))
+            elif name == 'pixeldrain' and self.pixeldrain_buttons_frame:
+                self.pixeldrain_buttons_frame.grid(row=row, column=2, pady=(5, 0) if row > 0 else (0, 0))
+        
+        # Show enabled logs with new column positions
+        for col, (name, label_widget, log_widget, status_label, link_entry) in enumerate(enabled_hosts):
+            if label_widget:
+                label_widget.grid(row=0, column=col, sticky=tk.W, pady=(0, 5), padx=(0, 5) if col < len(enabled_hosts)-1 else (0, 0))
+            if log_widget:
+                log_widget.grid(row=1, column=col, sticky=(tk.W, tk.E, tk.N, tk.S), 
+                              padx=(0, 5) if col < len(enabled_hosts)-1 else (0, 0))
+            self.log_frame.columnconfigure(col, weight=1)
+    
     def parse_apk_filename(self, filename: str) -> Optional[Dict[str, str]]:
         """
         Parse APK filename to extract package name and version.
@@ -533,11 +722,36 @@ class DragDropUploader:
         entry_widget.insert(0, link)
 
     def _update_status_emoji(self, host: str, emoji: str) -> None:
-        """Thread-safe helper to update status label emoji."""
-        if host == "gofile" and self.gofile_status_label:
-            self.root.after(0, lambda: self.gofile_status_label.config(text=f"{emoji} Gofile:"))
-        elif host == "buzzheavier" and self.buzzheavier_status_label:
-            self.root.after(0, lambda: self.buzzheavier_status_label.config(text=f"{emoji} Buzzheavier:"))
+        """Thread-safe helper to update status indicator with color."""
+        # Map emoji to colored text
+        if emoji == "🟢":
+            indicator = "✓"
+            color = "green"
+        elif emoji == "🔴":
+            indicator = "✗"
+            color = "red"
+        else:  # "⏳"
+            indicator = "⟳"
+            color = "orange"
+        
+        if host == "gofile" and self.gofile_status_indicator:
+            self.root.after(0, lambda: self.gofile_status_indicator.config(
+                text=indicator, foreground=color))
+            if hasattr(self, 'mini_gofile_indicator'):
+                self.root.after(0, lambda: self.mini_gofile_indicator.config(
+                    text=indicator, foreground=color))
+        elif host == "buzzheavier" and self.buzzheavier_status_indicator:
+            self.root.after(0, lambda: self.buzzheavier_status_indicator.config(
+                text=indicator, foreground=color))
+            if hasattr(self, 'mini_buzzheavier_indicator'):
+                self.root.after(0, lambda: self.mini_buzzheavier_indicator.config(
+                    text=indicator, foreground=color))
+        elif host == "pixeldrain" and self.pixeldrain_status_indicator:
+            self.root.after(0, lambda: self.pixeldrain_status_indicator.config(
+                text=indicator, foreground=color))
+            if hasattr(self, 'mini_pixeldrain_indicator'):
+                self.root.after(0, lambda: self.mini_pixeldrain_indicator.config(
+                    text=indicator, foreground=color))
 
     def _upload_to_gofile(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
         """
@@ -611,7 +825,12 @@ class DragDropUploader:
                 self._update_status_emoji("gofile", "🔴")
                 return None
 
-        except (OSError, IOError, RuntimeError, KeyError) as e:
+        except (RuntimeError, KeyError) as e:
+            self.log(f"Upload failed: {e}", "ERROR", host="gofile")
+            self._update_status_emoji("gofile", "🔴")
+            return None
+        except (OSError, IOError) as e:
+            # File/permission errors that aren't network-related
             self.log(f"Upload failed: {e}", "ERROR", host="gofile")
             self._update_status_emoji("gofile", "🔴")
             return None
@@ -697,18 +916,88 @@ class DragDropUploader:
                 self._update_status_emoji("buzzheavier", "🔴")
                 return None
 
-        except (OSError, IOError, RuntimeError, KeyError) as e:
+        except NetworkException as e:
+            # Network errors after all retries exhausted
+            self.log(f"Upload failed after retries: {e}", "ERROR", host="buzzheavier")
+            self._update_status_emoji("buzzheavier", "🔴")
+            return None
+        except (RuntimeError, KeyError) as e:
             self.log(f"Upload failed: {e}", "ERROR", host="buzzheavier")
             self._update_status_emoji("buzzheavier", "🔴")
+            return None
+        except (OSError, IOError) as e:
+            # File/permission errors that aren't network-related
+            self.log(f"Upload failed: {e}", "ERROR", host="buzzheavier")
+            self._update_status_emoji("buzzheavier", "🔴")
+            return None
+    
+    def _upload_to_pixeldrain(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
+        """
+        Upload file to Pixeldrain.
+        
+        Parameters
+        ----------
+        file_path : str
+            Path to the file
+        package : str
+            Package name (for future list organization)
+        version : str
+            Version string (for future list organization)
+        full_name : str
+            Full folder name (for future list organization)
+            
+        Returns
+        -------
+        Optional[str]
+            Public link if successful, None otherwise
+        """
+        try:
+            from pixeldrain_api import NetworkException
+            
+            # Upload file (flat structure for now, no list organization)
+            file_size_bytes = os.path.getsize(file_path)
+            file_size_mb = file_size_bytes / (1024 * 1024)
+            self.log(f"Uploading ({round(file_size_mb)} MB)...", host="pixeldrain")
+
+            start_time = time.time()
+            result = self.pixeldrain_api.upload_file(file_path)
+            upload_time = time.time() - start_time
+
+            upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
+            self.log(f"Upload complete! ({upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps)", "SUCCESS", host="pixeldrain")
+            
+            # Get file ID and generate public link
+            file_id = result.get('id')
+            if file_id:
+                link = f"https://pixeldrain.com/u/{file_id}"
+                self.log("Public link ready", "SUCCESS", host="pixeldrain")
+                # Update link entry immediately (thread-safe GUI update)
+                if self.pixeldrain_link_entry:
+                    self.root.after(0, lambda: self._update_link_entry(self.pixeldrain_link_entry, link))
+                # Update status to success
+                self._update_status_emoji("pixeldrain", "🟢")
+                return link
+            else:
+                self.log("Could not get file ID", "ERROR", host="pixeldrain")
+                self._update_status_emoji("pixeldrain", "🔴")
+                return None
+
+        except NetworkException as e:
+            self.log(f"Upload failed: {e}", "ERROR", host="pixeldrain")
+            self._update_status_emoji("pixeldrain", "🔴")
+            return None
+        except Exception as e:
+            self.log(f"Upload failed: {e}", "ERROR", host="pixeldrain")
+            self._update_status_emoji("pixeldrain", "🔴")
             return None
 
     def upload_file(self, file_path: str) -> None:
         """
-        Upload an APK file to both Gofile and Buzzheavier in parallel.
+        Upload an APK file to all enabled hosts in parallel.
 
         This method handles the entire upload workflow including parsing
         the filename, finding/creating folders, uploading the file, and
-        generating public links for both hosts.
+        generating public links for all hosts.
 
         Parameters
         ----------
@@ -765,44 +1054,61 @@ class DragDropUploader:
             # Reset status emojis to uploading
             self._update_status_emoji("gofile", "⏳")
             self._update_status_emoji("buzzheavier", "⏳")
+            self._update_status_emoji("pixeldrain", "⏳")
 
-            # Upload to both hosts in parallel
-            self.update_status("Uploading to both hosts...")
+            # Upload to all hosts in parallel
+            self.update_status("Uploading to enabled hosts...")
 
             gofile_link = None
             buzzheavier_link = None
+            pixeldrain_link = None
 
             def upload_gofile():
                 nonlocal gofile_link
-                if self.api and self.root_folder_id:
+                if self.gofile_enabled and not self.gofile_enabled.get():
+                    self.log("Gofile upload skipped (disabled)", "WARNING", host="gofile")
+                elif self.api and self.root_folder_id:
                     gofile_link = self._upload_to_gofile(file_path, package, version, full_name)
 
             def upload_buzzheavier():
                 nonlocal buzzheavier_link
-                if self.buzzheavier_api and self.buzzheavier_root_folder_id:
+                if self.buzzheavier_enabled and not self.buzzheavier_enabled.get():
+                    self.log("Buzzheavier upload skipped (disabled)", "WARNING", host="buzzheavier")
+                elif self.buzzheavier_api and self.buzzheavier_root_folder_id:
                     buzzheavier_link = self._upload_to_buzzheavier(file_path, package, version, full_name)
+            
+            def upload_pixeldrain():
+                nonlocal pixeldrain_link
+                if self.pixeldrain_enabled and not self.pixeldrain_enabled.get():
+                    self.log("Pixeldrain upload skipped (disabled)", "WARNING", host="pixeldrain")
+                elif self.pixeldrain_api:
+                    pixeldrain_link = self._upload_to_pixeldrain(file_path, package, version, full_name)
 
             # Start parallel uploads
             gofile_thread = threading.Thread(target=upload_gofile)
             buzzheavier_thread = threading.Thread(target=upload_buzzheavier)
+            pixeldrain_thread = threading.Thread(target=upload_pixeldrain)
 
             gofile_thread.start()
             buzzheavier_thread.start()
+            pixeldrain_thread.start()
 
-            # Wait for both to complete
+            # Wait for all to complete
             gofile_thread.join()
             buzzheavier_thread.join()
+            pixeldrain_thread.join()
 
             # Log completion summary with emoji status
             self.log("=" * 50)
             gofile_emoji = "🟢" if gofile_link else "🔴"
             buzzheavier_emoji = "🟢" if buzzheavier_link else "🔴"
+            pixeldrain_emoji = "🟢" if pixeldrain_link else "🔴"
             
-            success_count = sum([bool(gofile_link), bool(buzzheavier_link)])
-            self.log(f"Gofile: {gofile_emoji} | Buzzheavier: {buzzheavier_emoji}")
+            success_count = sum([bool(gofile_link), bool(buzzheavier_link), bool(pixeldrain_link)])
+            self.log(f"Gofile: {gofile_emoji} | Buzzheavier: {buzzheavier_emoji} | Pixeldrain: {pixeldrain_emoji}")
             
-            if success_count == 2:
-                self.log("Upload complete to both hosts!", "SUCCESS")
+            if success_count >= 2:
+                self.log(f"Upload complete to {success_count} hosts!", "SUCCESS")
             elif success_count == 1:
                 self.log("Upload complete to one host (check logs)", "WARNING")
             else:
@@ -899,31 +1205,69 @@ class DragDropUploader:
         except (RuntimeError, KeyError, ValueError) as e:
             self.log(f"Failed to connect to Buzzheavier: {e}", "ERROR", host="buzzheavier")
             return False
+    
+    def _initialize_pixeldrain(self) -> bool:
+        """
+        Initialize Pixeldrain API connection.
+        
+        Returns
+        -------
+        bool
+            True if initialization successful, False otherwise
+        """
+        try:
+            self.log("Connecting to Pixeldrain...", host="pixeldrain")
+            from pixeldrain_api import PixeldrainAPI
+            
+            self.pixeldrain_api = PixeldrainAPI(api_key=self.config.pixeldrain_api_key)
+
+            # Get user files to verify connection
+            user_data = self.pixeldrain_api.get_user_files()
+            
+            file_count = len(user_data.get('files', []))
+            self.log("Connected to Pixeldrain account", "SUCCESS", host="pixeldrain")
+            self.log(f"Files in account: {file_count}", host="pixeldrain")
+
+            return True
+
+        except Exception as e:
+            self.log(f"Failed to connect to Pixeldrain: {e}", "ERROR", host="pixeldrain")
+            return False
 
     def initialize_api(self) -> None:
-        """Initialize API connections for both hosts in parallel."""
+        """Initialize API connections for all hosts in parallel."""
         try:
             self.config = load_config()
 
-            # Initialize both APIs in parallel
+            # Initialize all APIs in parallel
             gofile_thread = threading.Thread(target=lambda: setattr(self, '_gofile_ready', self._initialize_gofile()))
             buzzheavier_thread = threading.Thread(target=lambda: setattr(self, '_buzzheavier_ready', self._initialize_buzzheavier()))
+            pixeldrain_thread = threading.Thread(target=lambda: setattr(self, '_pixeldrain_ready', self._initialize_pixeldrain()))
 
             self._gofile_ready = False
             self._buzzheavier_ready = False
+            self._pixeldrain_ready = False
 
             gofile_thread.start()
             buzzheavier_thread.start()
+            pixeldrain_thread.start()
 
-            # Wait for both to complete
+            # Wait for all to complete
             gofile_thread.join()
             buzzheavier_thread.join()
+            pixeldrain_thread.join()
 
             # Build folder structures for successful connections
             self.build_folder_structure()
+            
+            # Load host settings from config after GUI is ready
+            if self.root:
+                self.root.after(100, self.load_host_settings)
+                # Update visibility after loading settings
+                self.root.after(200, self.update_visibility)
 
             # Set ready if at least one host connected
-            if self._gofile_ready or self._buzzheavier_ready:
+            if self._gofile_ready or self._buzzheavier_ready or self._pixeldrain_ready:
                 self.is_ready = True
                 self.update_status("Ready - Drop APK file here")
                 self.log("=" * 50)
@@ -932,7 +1276,7 @@ class DragDropUploader:
             else:
                 self.update_status("Error - Check credentials")
                 messagebox.showerror("Connection Error", 
-                                   "Failed to connect to both Gofile and Buzzheavier.\n\n"
+                                   "Failed to connect to all file hosts.\n\n"
                                    "Check your config.json file.")
 
         except (RuntimeError, KeyError, ValueError, OSError, IOError) as e:
@@ -947,9 +1291,17 @@ class DragDropUploader:
         Parameters
         ----------
         host : str
-            Which host link to copy: 'gofile' or 'buzzheavier'
+            Which host link to copy: 'gofile', 'buzzheavier', or 'pixeldrain'
         """
-        link_entry = self.gofile_link_entry if host == "gofile" else self.buzzheavier_link_entry
+        if host == "gofile":
+            link_entry = self.gofile_link_entry
+        elif host == "buzzheavier":
+            link_entry = self.buzzheavier_link_entry
+        elif host == "pixeldrain":
+            link_entry = self.pixeldrain_link_entry
+        else:
+            link_entry = None
+            
         link = link_entry.get() if link_entry else ""
         if link:
             self.root.clipboard_clear()
@@ -963,9 +1315,17 @@ class DragDropUploader:
         Parameters
         ----------
         host : str
-            Which host link to open: 'gofile' or 'buzzheavier'
+            Which host link to open: 'gofile', 'buzzheavier', or 'pixeldrain'
         """
-        link_entry = self.gofile_link_entry if host == "gofile" else self.buzzheavier_link_entry
+        if host == "gofile":
+            link_entry = self.gofile_link_entry
+        elif host == "buzzheavier":
+            link_entry = self.buzzheavier_link_entry
+        elif host == "pixeldrain":
+            link_entry = self.pixeldrain_link_entry
+        else:
+            link_entry = None
+            
         link = link_entry.get() if link_entry else ""
         if link:
             import webbrowser
@@ -1035,6 +1395,38 @@ class DragDropUploader:
 
         thread = threading.Thread(target=retry_thread, daemon=True)
         thread.start()
+    
+    def retry_pixeldrain(self) -> None:
+        """Retry upload to Pixeldrain for the last uploaded file."""
+        if not self.last_upload_file_path or not self.last_upload_parsed_info:
+            self.log("No previous upload to retry", "WARNING", host="pixeldrain")
+            return
+
+        if not self.pixeldrain_api:
+            self.log("Pixeldrain not initialized", "ERROR", host="pixeldrain")
+            return
+
+        self.log("Retrying Pixeldrain upload...", "INFO", host="pixeldrain")
+        
+        # Clear entry and reset status
+        if self.pixeldrain_link_entry:
+            self.pixeldrain_link_entry.delete(0, tk.END)
+        self._update_status_emoji("pixeldrain", "⏳")
+
+        parsed = self.last_upload_parsed_info
+        
+        def retry_thread():
+            link = self._upload_to_pixeldrain(
+                self.last_upload_file_path,
+                parsed['package'],
+                parsed['version'],
+                parsed['full_name']
+            )
+            if not link:
+                self.log("Retry failed", "ERROR", host="pixeldrain")
+
+        thread = threading.Thread(target=retry_thread, daemon=True)
+        thread.start()
 
     def register_drop_target(self, widget, dnd_files_constant) -> None:
         """Register a widget as a drag-and-drop target."""
@@ -1081,7 +1473,7 @@ class DragDropUploader:
             self.main_frame = ttk.Frame(self.root, padding="10")
             self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
             self.main_frame.columnconfigure(0, weight=1)
-            self.main_frame.rowconfigure(2, weight=1)
+            self.main_frame.rowconfigure(3, weight=1)
 
             # Drop zone
             self.drop_frame = ttk.LabelFrame(
@@ -1119,21 +1511,44 @@ class DragDropUploader:
             # Enable drag and drop on drop frame
             self.register_drop_target(self.drop_frame, DND_FILES)
 
-            # Link frame (dual-host)
-            self.link_frame = ttk.LabelFrame(self.main_frame, text="Public Links", padding="10")
-            self.link_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+            # Link frame (multi-host with settings button)
+            link_header_frame = ttk.Frame(self.main_frame)
+            link_header_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+            link_header_frame.columnconfigure(0, weight=1)
+            
+            link_label = ttk.Label(link_header_frame, text="Public Links", font=('Arial', 10, 'bold'))
+            link_label.grid(row=0, column=0, sticky=tk.W)
+            
+            settings_btn = ttk.Button(link_header_frame, text="⚙️", width=3,
+                                     command=self.show_settings_menu)
+            settings_btn.grid(row=0, column=1, sticky=tk.E, padx=(5, 0))
+            
+            self.link_frame = ttk.Frame(self.main_frame, padding="10")
+            self.link_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
             self.link_frame.columnconfigure(1, weight=1)
 
             # Gofile row
-            self.gofile_status_label = ttk.Label(self.link_frame, text="🟢 Gofile:", font=('Arial', 9, 'bold'))
-            self.gofile_status_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+            self.gofile_enabled = tk.BooleanVar(value=True)
+            
+            self.gofile_status_frame = ttk.Frame(self.link_frame)
+            self.gofile_status_frame.grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+            gofile_status_frame = self.gofile_status_frame
+            
+            self.gofile_status_indicator = ttk.Label(gofile_status_frame, text="⟳", 
+                                                      font=('Arial', 9, 'bold'), foreground="orange")
+            self.gofile_status_indicator.grid(row=0, column=0)
+            
+            self.gofile_status_label = ttk.Label(gofile_status_frame, text=" Gofile:", 
+                                                  font=('Arial', 9, 'bold'))
+            self.gofile_status_label.grid(row=0, column=1)
             
             self.gofile_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.gofile_link_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
             self.link_entry = self.gofile_link_entry  # Backward compatibility
 
-            gofile_buttons = ttk.Frame(self.link_frame)
-            gofile_buttons.grid(row=0, column=2)
+            self.gofile_buttons_frame = ttk.Frame(self.link_frame)
+            self.gofile_buttons_frame.grid(row=0, column=2)
+            gofile_buttons = self.gofile_buttons_frame
 
             gofile_copy_btn = ttk.Button(gofile_buttons, text="Copy", 
                                          command=lambda: self.copy_link("gofile"), width=6)
@@ -1148,14 +1563,26 @@ class DragDropUploader:
             gofile_retry_btn.grid(row=0, column=2, padx=2)
 
             # Buzzheavier row
-            self.buzzheavier_status_label = ttk.Label(self.link_frame, text="⏳ Buzzheavier:", font=('Arial', 9, 'bold'))
-            self.buzzheavier_status_label.grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0))
+            self.buzzheavier_enabled = tk.BooleanVar(value=True)
+            
+            self.buzzheavier_status_frame = ttk.Frame(self.link_frame)
+            self.buzzheavier_status_frame.grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0))
+            buzzheavier_status_frame = self.buzzheavier_status_frame
+            
+            self.buzzheavier_status_indicator = ttk.Label(buzzheavier_status_frame, text="⟳", 
+                                                            font=('Arial', 9, 'bold'), foreground="orange")
+            self.buzzheavier_status_indicator.grid(row=0, column=0)
+            
+            self.buzzheavier_status_label = ttk.Label(buzzheavier_status_frame, text=" Buzzheavier:", 
+                                                        font=('Arial', 9, 'bold'))
+            self.buzzheavier_status_label.grid(row=0, column=1)
             
             self.buzzheavier_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.buzzheavier_link_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
 
-            buzzheavier_buttons = ttk.Frame(self.link_frame)
-            buzzheavier_buttons.grid(row=1, column=2, pady=(5, 0))
+            self.buzzheavier_buttons_frame = ttk.Frame(self.link_frame)
+            self.buzzheavier_buttons_frame.grid(row=1, column=2, pady=(5, 0))
+            buzzheavier_buttons = self.buzzheavier_buttons_frame
 
             buzzheavier_copy_btn = ttk.Button(buzzheavier_buttons, text="Copy", 
                                               command=lambda: self.copy_link("buzzheavier"), width=6)
@@ -1168,17 +1595,52 @@ class DragDropUploader:
             buzzheavier_retry_btn = ttk.Button(buzzheavier_buttons, text="Retry", 
                                                command=self.retry_buzzheavier, width=6)
             buzzheavier_retry_btn.grid(row=0, column=2, padx=2)
+            
+            # Pixeldrain row
+            self.pixeldrain_enabled = tk.BooleanVar(value=False)
+            
+            self.pixeldrain_status_frame = ttk.Frame(self.link_frame)
+            self.pixeldrain_status_frame.grid(row=2, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0))
+            pixeldrain_status_frame = self.pixeldrain_status_frame
+            
+            self.pixeldrain_status_indicator = ttk.Label(pixeldrain_status_frame, text="⟳", 
+                                                           font=('Arial', 9, 'bold'), foreground="orange")
+            self.pixeldrain_status_indicator.grid(row=0, column=0)
+            
+            self.pixeldrain_status_label = ttk.Label(pixeldrain_status_frame, text=" Pixeldrain:", 
+                                                       font=('Arial', 9, 'bold'))
+            self.pixeldrain_status_label.grid(row=0, column=1)
+            
+            self.pixeldrain_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
+            self.pixeldrain_link_entry.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
 
-            # Log frame (dual columns)
+            self.pixeldrain_buttons_frame = ttk.Frame(self.link_frame)
+            self.pixeldrain_buttons_frame.grid(row=2, column=2, pady=(5, 0))
+            pixeldrain_buttons = self.pixeldrain_buttons_frame
+
+            pixeldrain_copy_btn = ttk.Button(pixeldrain_buttons, text="Copy", 
+                                              command=lambda: self.copy_link("pixeldrain"), width=6)
+            pixeldrain_copy_btn.grid(row=0, column=0, padx=2)
+
+            pixeldrain_open_btn = ttk.Button(pixeldrain_buttons, text="Open", 
+                                              command=lambda: self.open_link("pixeldrain"), width=6)
+            pixeldrain_open_btn.grid(row=0, column=1, padx=2)
+
+            pixeldrain_retry_btn = ttk.Button(pixeldrain_buttons, text="Retry", 
+                                               command=self.retry_pixeldrain, width=6)
+            pixeldrain_retry_btn.grid(row=0, column=2, padx=2)
+
+            # Log frame (tri-column with dynamic visibility)
             self.log_frame = ttk.LabelFrame(self.main_frame, text="Activity Logs", padding="10")
-            self.log_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+            self.log_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
             self.log_frame.columnconfigure(0, weight=1)
             self.log_frame.columnconfigure(1, weight=1)
+            self.log_frame.columnconfigure(2, weight=1)
             self.log_frame.rowconfigure(1, weight=1)
 
             # Gofile log column
-            gofile_log_label = ttk.Label(self.log_frame, text="Gofile", font=('Arial', 9, 'bold'))
-            gofile_log_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+            self.gofile_log_label = ttk.Label(self.log_frame, text="Gofile", font=('Arial', 9, 'bold'))
+            self.gofile_log_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
 
             self.gofile_log_text = scrolledtext.ScrolledText(self.log_frame, height=15,
                                                              font=('Consolas', 8),
@@ -1191,8 +1653,8 @@ class DragDropUploader:
             self.gofile_log_text.tag_config("error", foreground="red")
 
             # Buzzheavier log column
-            buzzheavier_log_label = ttk.Label(self.log_frame, text="Buzzheavier", font=('Arial', 9, 'bold'))
-            buzzheavier_log_label.grid(row=0, column=1, sticky=tk.W, pady=(0, 5))
+            self.buzzheavier_log_label = ttk.Label(self.log_frame, text="Buzzheavier", font=('Arial', 9, 'bold'))
+            self.buzzheavier_log_label.grid(row=0, column=1, sticky=tk.W, pady=(0, 5))
 
             self.buzzheavier_log_text = scrolledtext.ScrolledText(self.log_frame, height=15,
                                                                   font=('Consolas', 8),
@@ -1202,6 +1664,19 @@ class DragDropUploader:
             # Color tags for Buzzheavier log
             self.buzzheavier_log_text.tag_config("success", foreground="green")
             self.buzzheavier_log_text.tag_config("error", foreground="red")
+            
+            # Pixeldrain log column
+            self.pixeldrain_log_label = ttk.Label(self.log_frame, text="Pixeldrain", font=('Arial', 9, 'bold'))
+            self.pixeldrain_log_label.grid(row=0, column=2, sticky=tk.W, pady=(0, 5))
+
+            self.pixeldrain_log_text = scrolledtext.ScrolledText(self.log_frame, height=15,
+                                                                  font=('Consolas', 8),
+                                                                  wrap=tk.WORD)
+            self.pixeldrain_log_text.grid(row=1, column=2, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+            # Color tags for Pixeldrain log
+            self.pixeldrain_log_text.tag_config("success", foreground="green")
+            self.pixeldrain_log_text.tag_config("error", foreground="red")
 
             # ===== MINI FRAME (Mini Mode) =====
             self.mini_frame = ttk.Frame(self.root, padding="10")
@@ -1242,8 +1717,10 @@ class DragDropUploader:
             mini_links_frame.columnconfigure(0, weight=1)
 
             # Gofile mini section
-            mini_gofile_label = ttk.Label(mini_links_frame, text="🟢 Gofile", font=('Arial', 8, 'bold'))
-            mini_gofile_label.grid(row=0, column=0, sticky=tk.W)
+            self.mini_gofile_indicator = ttk.Label(mini_links_frame, text="✓", font=('Arial', 8, 'bold'), foreground="green")
+            self.mini_gofile_indicator.grid(row=0, column=0, sticky=tk.W)
+            mini_gofile_name = ttk.Label(mini_links_frame, text=" Gofile", font=('Arial', 8, 'bold'))
+            mini_gofile_name.grid(row=0, column=0, sticky=tk.W, padx=(15, 0))
 
             mini_gofile_buttons = ttk.Frame(mini_links_frame)
             mini_gofile_buttons.grid(row=1, column=0, pady=(2, 5))
@@ -1257,8 +1734,10 @@ class DragDropUploader:
             mini_gofile_open.grid(row=0, column=1, padx=2)
 
             # Buzzheavier mini section
-            mini_buzzheavier_label = ttk.Label(mini_links_frame, text="⏳ Buzzheavier", font=('Arial', 8, 'bold'))
-            mini_buzzheavier_label.grid(row=2, column=0, sticky=tk.W)
+            self.mini_buzzheavier_indicator = ttk.Label(mini_links_frame, text="⟳", font=('Arial', 8, 'bold'), foreground="orange")
+            self.mini_buzzheavier_indicator.grid(row=2, column=0, sticky=tk.W)
+            mini_buzzheavier_name = ttk.Label(mini_links_frame, text=" Buzzheavier", font=('Arial', 8, 'bold'))
+            mini_buzzheavier_name.grid(row=2, column=0, sticky=tk.W, padx=(15, 0))
 
             mini_buzzheavier_buttons = ttk.Frame(mini_links_frame)
             mini_buzzheavier_buttons.grid(row=3, column=0, pady=(2, 5))
@@ -1271,11 +1750,28 @@ class DragDropUploader:
                                               command=lambda: self.open_link("buzzheavier"), width=8)
             mini_buzzheavier_open.grid(row=0, column=1, padx=2)
 
+            # Pixeldrain mini section
+            self.mini_pixeldrain_indicator = ttk.Label(mini_links_frame, text="⟳", font=('Arial', 8, 'bold'), foreground="orange")
+            self.mini_pixeldrain_indicator.grid(row=4, column=0, sticky=tk.W)
+            mini_pixeldrain_name = ttk.Label(mini_links_frame, text=" Pixeldrain", font=('Arial', 8, 'bold'))
+            mini_pixeldrain_name.grid(row=4, column=0, sticky=tk.W, padx=(15, 0))
+
+            mini_pixeldrain_buttons = ttk.Frame(mini_links_frame)
+            mini_pixeldrain_buttons.grid(row=5, column=0, pady=(2, 5))
+
+            mini_pixeldrain_copy = ttk.Button(mini_pixeldrain_buttons, text="Copy",
+                                             command=lambda: self.copy_link("pixeldrain"), width=8)
+            mini_pixeldrain_copy.grid(row=0, column=0, padx=2)
+
+            mini_pixeldrain_open = ttk.Button(mini_pixeldrain_buttons, text="Open",
+                                             command=lambda: self.open_link("pixeldrain"), width=8)
+            mini_pixeldrain_open.grid(row=0, column=1, padx=2)
+
             # Normal mode checkbox
             normal_check = ttk.Checkbutton(mini_links_frame, text="Normal Mode",
                                           variable=self.mini_mode,
                                           command=self.toggle_mini_mode)
-            normal_check.grid(row=4, column=0, pady=(5, 0))
+            normal_check.grid(row=6, column=0, pady=(5, 0))
 
             # Start in normal mode (hide mini frame)
             self.mini_frame.grid_remove()

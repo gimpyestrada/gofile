@@ -1,24 +1,25 @@
-# Dual-Host Drag & Drop Uploader
+# Multi-Host Drag & Drop Uploader
 
-A powerful GUI application that lets you drag and drop APK files to automatically upload them to **both Gofile and Buzzheavier** simultaneously with intelligent folder organization. Perfect for developers and testers who need reliable file hosting with redundancy.
+A powerful GUI application that lets you drag and drop APK files to automatically upload them to **Gofile, Buzzheavier, and Pixeldrain** with intelligent folder organization and configurable host selection. Perfect for developers and testers who need reliable file hosting with maximum redundancy.
 
-![Version](https://img.shields.io/badge/version-2.0-blue)
+![Version](https://img.shields.io/badge/version-3.0-blue)
 ![Python](https://img.shields.io/badge/python-3.6+-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## ✨ Features
 
-- 🚀 **Dual-Host Uploads**: Automatically uploads to both Gofile and Buzzheavier in parallel
+- 🚀 **Multi-Host Uploads**: Automatically uploads to Gofile, Buzzheavier, and/or Pixeldrain in parallel
+- ⚙️ **Configurable Hosts**: Choose which hosts to upload to via settings menu
 - 📁 **Drag & Drop Interface**: Just drag APK files onto the window
-- 🎯 **Mini Mode**: Compact always-on-top window (200x320) for keeping on your desktop
-- 🤖 **Intelligent Folder Management**: Automatically finds or creates the appropriate folder structure on both hosts
-- 🔗 **Dual Public Links**: Get public links from both hosts immediately as they finish
-- 📊 **Dual Activity Logs**: Separate real-time logs for each host
-- ⚡ **Status Indicators**: Visual emoji indicators (🟢 success, 🔴 failure, ⏳ uploading) for each host
-- 🔄 **Individual Retry**: Retry failed uploads on either host independently
+- 🎯 **Mini Mode**: Compact always-on-top window for keeping on your desktop
+- 🤖 **Intelligent Folder Management**: Automatically organizes files on Gofile and Buzzheavier
+- 🔗 **Multi-Host Public Links**: Get public links from all enabled hosts immediately as they finish
+- 📊 **Dynamic Activity Logs**: Separate real-time logs for each enabled host
+- ⚡ **Colored Status Indicators**: Text indicators (✓ success, ✗ failure, ⟳ uploading) for each host
+- 🔄 **Individual Retry**: Retry failed uploads on any host independently
 - 🚀 **Upload Speed Display**: Shows transfer speed in MB/s and Mbps for each host
-- 💾 **Smart Caching**: Remembers folder structure for both hosts for lightning-fast uploads
-- 🌍 **US Server Optimization**: Buzzheavier uses Eastern US servers by default for faster speeds
+- 💾 **Smart Caching**: Remembers folder structure for Gofile and Buzzheavier
+- 👁️ **Dynamic Visibility**: Only shows logs and links for enabled hosts
 
 ## 📦 Installation
 
@@ -55,7 +56,11 @@ Create a `config.json` file in the same directory as the application:
 {
   "api_token": "your_gofile_api_token",
   "account_id": "your_gofile_account_id",
-  "buzzheavier_account_id": "your_buzzheavier_account_id"
+  "buzzheavier_account_id": "your_buzzheavier_account_id",
+  "pixeldrain_api_key": "your_pixeldrain_api_key",
+  "gofile_enabled": true,
+  "buzzheavier_enabled": false,
+  "pixeldrain_enabled": false
 }
 ```
 
@@ -74,6 +79,19 @@ Create a `config.json` file in the same directory as the application:
 3. Copy your:
    - **Account ID** (20-character alphanumeric, use as `buzzheavier_account_id`)
 
+**Pixeldrain:**
+1. Log into [Pixeldrain.com](https://pixeldrain.com)
+2. Go to **User** → **API Keys**
+3. Create or copy your API key (use as `pixeldrain_api_key`)
+
+### Host Settings:
+
+- `gofile_enabled`: Set to `true` to enable Gofile uploads (default: true)
+- `buzzheavier_enabled`: Set to `true` to enable Buzzheavier uploads (default: false)
+- `pixeldrain_enabled`: Set to `true` to enable Pixeldrain uploads (default: false)
+
+You can also change these settings at runtime using the gear icon (⚙️) in the application.
+
 **Security Note**: Keep your `config.json` private! It contains your API credentials. Never commit it to public repositories.
 
 ## 🚀 Usage
@@ -85,23 +103,25 @@ Simply run the script:
 python drag_drop_uploader.py
 ```
 
-### Normal Mode (Full Window - 900x600)
+### Normal Mode (Full Window - 900x650)
 
 A window will appear:
-1. Wait for both hosts to initialize (shows connection status for Gofile and Buzzheavier)
-2. Drag and drop an APK file onto the drop zone
-3. Watch both activity logs simultaneously as each host:
+1. Wait for enabled hosts to initialize (shows connection status)
+2. Click the gear icon (⚙️) to configure which hosts to use
+3. Drag and drop an APK file onto the drop zone
+4. Watch activity logs for each enabled host simultaneously:
    - Parses the APK filename
-   - Finds or creates the parent folder
-   - Creates the version folder
+   - Finds or creates the parent folder (Gofile/Buzzheavier)
+   - Creates the version folder (Gofile/Buzzheavier)
    - Uploads the file (shows speed in MB/s and Mbps)
-   - Makes the folder public (Gofile) or generates direct link (Buzzheavier)
+   - Makes the folder public (Gofile) or generates direct link (Buzzheavier/Pixeldrain)
    - Displays the public link
-4. Both public links appear in separate text boxes as each host completes
-5. Status indicators show: ⏳ (uploading), 🟢 (success), or 🔴 (failure) for each host
-6. Use "Copy" to copy a link, "Open" to open in browser, or "Retry" to retry a failed upload
+5. Public links appear in separate text boxes as each host completes
+6. Status indicators show: ⟳ orange (uploading), ✓ green (success), or ✗ red (failure) for each host
+7. Use "Copy" to copy a link, "Open" to open in browser, or "Retry" to retry a failed upload
+8. Only enabled hosts are visible in the UI
 
-### Mini Mode (Always on Top - 200x320)
+### Mini Mode (Always on Top)
 
 1. Check the **"Mini Mode (Always on Top)"** checkbox
 2. Window shrinks to a compact stacked layout
@@ -109,10 +129,11 @@ A window will appear:
 4. Shows:
    - Drop zone with folder icon
    - Status indicator
-   - Both host links stacked vertically
-   - Copy/Open/Retry buttons for each host
+   - All enabled host links stacked vertically
+   - Copy/Open buttons for each enabled host
    - Normal checkbox (to return to full mode)
 5. Perfect for keeping on your desktop while working
+6. Only enabled hosts appear in mini mode
 
 **Toggle back**: Uncheck the "Normal" checkbox in mini mode
 
@@ -120,21 +141,23 @@ A window will appear:
 
 ### Folder Organization
 
-The uploader automatically organizes your APKs into a hierarchical structure on **both hosts**:
+**Gofile & Buzzheavier**: The uploader automatically organizes your APKs into a hierarchical structure:
 
 ```
-Gofile Root/                                    Buzzheavier Root/
-├── com.example.app/                            ├── com.example.app/
-│   ├── com.example.app-1.0.0-release/          │   ├── com.example.app-1.0.0-release/
-│   │   └── com.example.app-1.0.0-release.apk   │   │   └── com.example.app-1.0.0-release.apk
-│   └── com.example.app-2.0.0-beta/             │   └── com.example.app-2.0.0-beta/
-│       └── com.example.app-2.0.0-beta.apk      │       └── com.example.app-2.0.0-beta.apk
-└── com.another.app/                            └── com.another.app/
-    └── com.another.app-1.5.0/                      └── com.another.app-1.5.0/
-        └── com.another.app-1.5.0.apk                   └── com.another.app-1.5.0.apk
+Gofile/Buzzheavier Root/
+├── com.example.app/
+│   ├── com.example.app-1.0.0-release/
+│   │   └── com.example.app-1.0.0-release.apk
+│   └── com.example.app-2.0.0-beta/
+│       └── com.example.app-2.0.0-beta.apk
+└── com.another.app/
+    └── com.another.app-1.5.0/
+        └── com.another.app-1.5.0.apk
 ```
 
-Both hosts maintain identical folder structures for consistency.
+Both Gofile and Buzzheavier maintain identical folder structures for consistency.
+
+**Pixeldrain**: Uses a flat structure - files are uploaded directly to your account root without folder organization.
 
 ### File Processing
 
@@ -142,24 +165,29 @@ Both hosts maintain identical folder structures for consistency.
    - Expected format: `com.company.app-1.2.3-suffix.apk`
    - Example: `com.example.myapp-2.0.1-release.apk`
 
-2. **Parallel Upload to Both Hosts**:
-   - Creates two threads for simultaneous uploads
+2. **Parallel Upload to Enabled Hosts**:
+   - Creates separate threads for simultaneous uploads
    - Each host operates independently
 
-3. **For Each Host (Gofile & Buzzheavier)**:
+3. **For Gofile & Buzzheavier**:
    - **Find/Create Parent Folder**: Searches for existing parent folder matching package name
    - **Create Version Folder**: Creates subfolder with full APK name (without .apk)
    - **Upload File**: Uploads APK to version folder with progress tracking
    - **Generate Public Link**: 
      - Gofile: Makes version folder public and retrieves link
      - Buzzheavier: Gets file ID and generates direct link
-   - **Update UI**: Link appears immediately when host finishes (doesn't wait for the other)
+   - **Update UI**: Link appears immediately when host finishes
 
-4. **Status Updates**:
-   - ⏳ emoji during upload
-   - 🟢 emoji on success
-   - 🔴 emoji on failure
-   - Completion summary: "Gofile: 🟢 | Buzzheavier: 🟢"
+4. **For Pixeldrain**:
+   - **Upload File**: Uploads APK directly to account root (flat structure)
+   - **Generate Public Link**: Creates direct link from file ID
+   - **Update UI**: Link appears immediately
+
+5. **Status Updates**:
+   - ⟳ orange indicator during upload
+   - ✓ green indicator on success
+   - ✗ red indicator on failure
+   - Completion summary shows status for all enabled hosts
 
 ### Smart Caching
 
@@ -220,24 +248,33 @@ The uploader maintains separate local caches for each host:
 
 ## 💡 Features in Detail
 
-### Dual-Host Redundancy
-- Uploads to both Gofile and Buzzheavier simultaneously
-- If one host fails, you still have the other
+### Multi-Host Redundancy
+- Upload to any combination of Gofile, Buzzheavier, and Pixeldrain
+- Configure which hosts to use via settings menu (⚙️)
+- If one host fails, you still have the others
 - Independent retry for each host
-- Separate status tracking with emoji indicators
+- Separate status tracking with colored text indicators
 
 ### Parallel Upload Performance
-- Both uploads run simultaneously in separate threads
+- All enabled hosts upload simultaneously in separate threads
 - Links appear immediately as each host finishes
 - No waiting for the slowest host
-- Typical scenario: Buzzheavier finishes first (US servers), then Gofile
+- Typical scenario: Pixeldrain fastest, then Buzzheavier, then Gofile
+
+### Dynamic Host Configuration
+- Settings menu accessible via gear icon (⚙️)
+- Enable/disable hosts on the fly
+- Changes saved automatically to config.json
+- UI updates dynamically to show only enabled hosts
+- Must have at least one host enabled
 
 ### Mini Mode
-- Compact 200x320 window with stacked layout
+- Compact window with stacked layout
 - Always stays on top of other windows
 - Perfect for keeping accessible while working
-- Quick access to both links and all controls
+- Quick access to all enabled host links and controls
 - Easy toggle back to normal mode
+- Automatically adjusts to show only enabled hosts
 
 ### Upload Speed Display
 Shows real-time upload performance for each host:
@@ -253,11 +290,12 @@ Shows real-time upload performance for each host:
 - Uploads only to the failed host
 
 ### Status Indicators
-Visual emoji indicators for each host:
-- **⏳**: Upload in progress
-- **🟢**: Upload successful
-- **🔴**: Upload failed
+Visual colored text indicators for each host:
+- **⟳ (orange)**: Upload in progress
+- **✓ (green)**: Upload successful
+- **✗ (red)**: Upload failed
 - Updates in real-time during upload
+- Same indicators in both normal and mini mode
 
 ### Color-Coded Logs
 Each host has its own log with color coding:
@@ -288,22 +326,22 @@ The application handles various error scenarios:
 
 1. You have: `com.whatsapp.messenger-2.23.20.76-arm64-v8a.apk`
 
-2. Drag it onto the window
+2. Configure hosts via settings menu (e.g., enable all three)
 
-3. The app (simultaneously on both hosts):
-   - Parses: package = `com.whatsapp.messenger`, version = `2.23.20.76`
-   - Finds/creates parent folder: `com.whatsapp.messenger`
-   - Creates version folder: `com.whatsapp.messenger-2.23.20.76-arm64-v8a`
-   - Uploads the APK in parallel
-   - Generates public links
+3. Drag it onto the window
 
-4. Results appear as each completes:
-   - Buzzheavier (faster, ~3s @ 80 Mbps): `https://buzzheavier.com/xyz123`
+4. The app uploads simultaneously to all enabled hosts:
+   - **Gofile & Buzzheavier**: Parse package/version, create folder structure, upload to version folder
+   - **Pixeldrain**: Upload directly to account root (flat structure)
+
+5. Results appear as each completes:
+   - Pixeldrain (fastest, ~2s @ 100 Mbps): `https://pixeldrain.com/u/AbCd1234`
+   - Buzzheavier (~3s @ 80 Mbps): `https://buzzheavier.com/xyz123`
    - Gofile (~5s @ 40 Mbps): `https://gofile.io/d/AbCd12`
 
-5. Status shows: `Gofile: 🟢 | Buzzheavier: 🟢`
+6. Status shows: `Gofile: ✓ | Buzzheavier: ✓ | Pixeldrain: ✓`
 
-6. Two links ready to share with redundancy!
+7. Three links ready to share with maximum redundancy!
 
 ## 🐛 Troubleshooting
 
@@ -313,8 +351,8 @@ Install the package:
 pip install tkinterdnd2
 ```
 
-### "Failed to connect to Gofile" or "Failed to connect to Buzzheavier"
-Check your `config.json` file and ensure all API credentials are valid. The app will still work if at least one host connects successfully.
+### "Failed to connect to Gofile", "Failed to connect to Buzzheavier", or "Failed to connect to Pixeldrain"
+Check your `config.json` file and ensure all API credentials are valid for the hosts you want to use. The app will work if at least one host connects successfully.
 
 ### "Could not parse APK filename"
 Ensure your APK follows the naming convention:
@@ -334,36 +372,40 @@ If the folder structure seems outdated:
 
 ## ⚡ Performance
 
-- **Initialization**: Both hosts connect in parallel (~2-3 seconds total)
-- **Cold start** (no cache): ~5-10 seconds per host to scan and build folder structure (parallel)
-- **Warm start** (with cache): <1 second to load both folder structures
+- **Initialization**: All enabled hosts connect in parallel (~2-3 seconds total)
+- **Cold start** (no cache): ~5-10 seconds for Gofile/Buzzheavier to scan and build folder structure (parallel)
+- **Warm start** (with cache): <1 second to load folder structures
 - **Upload speed**: 
+  - Pixeldrain: 100+ Mbps (varies by location)
   - Buzzheavier: 80+ Mbps (US servers)
   - Gofile: 40+ Mbps (varies by location)
-- **Parallel benefit**: Total upload time = slowest host (not sum of both)
+- **Parallel benefit**: Total upload time = slowest enabled host (not sum of all)
 - **GUI responsiveness**: All uploads in background threads, GUI never freezes
 
 ## 💡 Tips & Best Practices
 
 - Keep the window open and ready - it uses minimal resources
 - Use **Mini Mode** to keep it accessible on your desktop while working
-- Both host caches last 24 hours, so subsequent uploads are very fast
+- Configure which hosts to use based on your needs (more hosts = more redundancy)
+- Gofile/Buzzheavier caches last 24 hours for fast folder lookups
 - You can drop multiple files one at a time (wait for each to complete)
-- The dual activity logs show detailed progress including upload speeds
+- The dynamic activity logs show detailed progress for enabled hosts only
 - Compare upload speeds between hosts to diagnose connection issues
-- If one host fails, you still have the other - use the Retry button to try again
-- Buzzheavier typically finishes first due to US server optimization
-- Both links provide the same file - choose whichever host works best for your recipients
-- The status emoji indicators (🟢/🔴/⏳) make it easy to see what's happening at a glance
+- If one host fails, you still have the others - use the Retry button to try again
+- Pixeldrain typically finishes first, followed by Buzzheavier, then Gofile
+- All links provide the same file - choose whichever host works best for your recipients
+- The status indicators (✓/✗/⟳) make it easy to see what's happening at a glance
+- Settings menu (⚙️) allows you to quickly enable/disable hosts without editing config.json
 
 ## 💻 Technical Requirements
 
 - **Python**: 3.6 or higher
 - **Operating System**: Windows (PowerShell)
 - **Internet**: Active connection required
-- **File Host Accounts**: 
+- **File Host Accounts** (at least one required): 
   - Gofile account (Premium recommended for best performance)
   - Buzzheavier account (Free tier works well)
+  - Pixeldrain account (Free tier works well)
 - **Dependencies**: 
   - `requests` - HTTP library for API calls
   - `tkinterdnd2` - Drag and drop support for Tkinter

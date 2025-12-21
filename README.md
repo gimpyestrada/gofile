@@ -1,12 +1,25 @@
 # Gofile API Python Client
 
-A comprehensive Python client library for interacting with the [Gofile.io](https://gofile.io) API. Upload files, manage folders, create direct links, and more with a simple, intuitive interface.
+A comprehensive Python client library and multi-host uploader for [Gofile.io](https://gofile.io), [Buzzheavier.com](https://buzzheavier.com), and [Pixeldrain.com](https://pixeldrain.com). Upload files, manage folders, create direct links, and more with a simple, intuitive interface.
 
 ![Version](https://img.shields.io/badge/version-1.0-blue)
 ![Python](https://img.shields.io/badge/python-3.6+-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-## ✨ Features
+## 🚀 Featured Application: Multi-Host Drag & Drop Uploader
+
+Want a GUI application that uploads to all three hosts simultaneously? Check out [**drag_drop_uploader.py**](DRAG_DROP_UPLOADER_README.md) - a powerful drag-and-drop interface with:
+- 📤 Upload to Gofile, Buzzheavier, and Pixeldrain in parallel
+- ⚙️ Configurable host selection via settings menu
+- 🎯 Mini mode (always-on-top compact window)
+- 📁 Intelligent folder organization
+- ⚡ Real-time status indicators and upload speeds
+
+See the [**Drag & Drop Uploader Documentation**](DRAG_DROP_UPLOADER_README.md) for details.
+
+---
+
+## ✨ API Library Features
 
 - 📤 **File Uploads** - Guest and authenticated uploads with regional endpoint support
 - 📁 **Folder Management** - Create, organize, and manage your folder structure
