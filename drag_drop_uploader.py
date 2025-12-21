@@ -85,6 +85,11 @@ class DragDropUploader:
         self.gofile_enabled = None
         self.buzzheavier_enabled = None
         self.pixeldrain_enabled = None
+        
+        # Pixeldrain-specific state
+        self.pixeldrain_api = None
+        self.pixeldrain_folder_structure = {}
+        self.pixeldrain_ready = False
 
         # GUI components
         self.root = None
@@ -128,6 +133,13 @@ class DragDropUploader:
         
         # Store status frames (contain indicator + name)
         self.gofile_status_frame = None
+        self.buzzheavier_status_frame = None
+        self.pixeldrain_status_frame = None
+        
+        # Mini mode indicators (initialized in run())
+        self.mini_gofile_indicator = None
+        self.mini_buzzheavier_indicator = None
+        self.mini_pixeldrain_indicator = None
         self.buzzheavier_status_frame = None
         self.pixeldrain_status_frame = None
 
@@ -207,10 +219,13 @@ class DragDropUploader:
                 self.config.update('buzzheavier_enabled', self.buzzheavier_enabled.get())
                 self.config.update('pixeldrain_enabled', self.pixeldrain_enabled.get())
                 
-                # Call visibility update after saving settings
                 self.update_visibility()
-            except Exception as e:
-                print(f"Error saving host settings: {e}")
+            except (IOError, OSError) as e:
+                print(f"Error saving host settings to file: {e}")
+            except (AttributeError, KeyError, ValueError) as e:
+                print(f"Error with config data: {e}")
+            except Exception as e:  # pylint: disable=broad-except
+                print(f"Unexpected error saving host settings: {e}")
     
     def load_host_settings(self) -> None:
         """Load enabled host settings from config.json."""
@@ -237,17 +252,17 @@ class DragDropUploader:
         menu.add_checkbutton(
             label="Gofile",
             variable=self.gofile_enabled,
-            command=lambda: self._validate_and_save_host_settings()
+            command=self._validate_and_save_host_settings
         )
         menu.add_checkbutton(
             label="Buzzheavier",
             variable=self.buzzheavier_enabled,
-            command=lambda: self._validate_and_save_host_settings()
+            command=self._validate_and_save_host_settings
         )
         menu.add_checkbutton(
             label="Pixeldrain",
             variable=self.pixeldrain_enabled,
-            command=lambda: self._validate_and_save_host_settings()
+            command=self._validate_and_save_host_settings
         )
         
         # Display menu at mouse position
@@ -258,15 +273,11 @@ class DragDropUploader:
     
     def _validate_and_save_host_settings(self) -> None:
         """Validate at least one host is enabled before saving."""
-        # Check if at least one host is enabled
         if not (self.gofile_enabled.get() or self.buzzheavier_enabled.get() or self.pixeldrain_enabled.get()):
-            # Restore the last clicked checkbox (find which one was just unchecked)
-            import tkinter.messagebox as messagebox
             messagebox.showwarning(
                 "Invalid Settings",
                 "At least one file host must be enabled."
             )
-            # Re-enable at least gofile
             self.gofile_enabled.set(True)
         
         self.save_host_settings()
@@ -345,7 +356,7 @@ class DragDropUploader:
                 self.pixeldrain_buttons_frame.grid(row=row, column=2, pady=(5, 0) if row > 0 else (0, 0))
         
         # Show enabled logs with new column positions
-        for col, (name, label_widget, log_widget, status_label, link_entry) in enumerate(enabled_hosts):
+        for col, (name, label_widget, log_widget, _status_label, link_entry) in enumerate(enabled_hosts):
             if label_widget:
                 label_widget.grid(row=0, column=col, sticky=tk.W, pady=(0, 5), padx=(0, 5) if col < len(enabled_hosts)-1 else (0, 0))
             if log_widget:
@@ -931,20 +942,20 @@ class DragDropUploader:
             self._update_status_emoji("buzzheavier", "🔴")
             return None
     
-    def _upload_to_pixeldrain(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
+    def _upload_to_pixeldrain(self, file_path: str, _package: str, _version: str, _full_name: str) -> Optional[str]:
         """
-        Upload file to Pixeldrain.
+        Upload file to Pixeldrain (flat structure).
         
         Parameters
         ----------
         file_path : str
             Path to the file
-        package : str
-            Package name (for future list organization)
-        version : str
-            Version string (for future list organization)
-        full_name : str
-            Full folder name (for future list organization)
+        _package : str
+            Package name (unused - for future list organization)
+        _version : str
+            Version string (unused - for future list organization)
+        _full_name : str
+            Full folder name (unused - for future list organization)
             
         Returns
         -------
@@ -952,9 +963,6 @@ class DragDropUploader:
             Public link if successful, None otherwise
         """
         try:
-            from pixeldrain_api import NetworkException
-            
-            # Upload file (flat structure for now, no list organization)
             file_size_bytes = os.path.getsize(file_path)
             file_size_mb = file_size_bytes / (1024 * 1024)
             self.log(f"Uploading ({round(file_size_mb)} MB)...", host="pixeldrain")
@@ -983,11 +991,15 @@ class DragDropUploader:
                 return None
 
         except NetworkException as e:
-            self.log(f"Upload failed: {e}", "ERROR", host="pixeldrain")
+            self.log(f"Network error: {e}", "ERROR", host="pixeldrain")
             self._update_status_emoji("pixeldrain", "🔴")
             return None
-        except Exception as e:
-            self.log(f"Upload failed: {e}", "ERROR", host="pixeldrain")
+        except (OSError, IOError) as e:
+            self.log(f"File error: {e}", "ERROR", host="pixeldrain")
+            self._update_status_emoji("pixeldrain", "🔴")
+            return None
+        except Exception as e:  # pylint: disable=broad-except
+            self.log(f"Unexpected error: {e}", "ERROR", host="pixeldrain")
             self._update_status_emoji("pixeldrain", "🔴")
             return None
 
@@ -1230,8 +1242,11 @@ class DragDropUploader:
 
             return True
 
-        except Exception as e:
-            self.log(f"Failed to connect to Pixeldrain: {e}", "ERROR", host="pixeldrain")
+        except NetworkException as e:
+            self.log(f"Network error connecting to Pixeldrain: {e}", "ERROR", host="pixeldrain")
+            return False
+        except Exception as e:  # pylint: disable=broad-except
+            self.log(f"Unexpected error connecting to Pixeldrain: {e}", "ERROR", host="pixeldrain")
             return False
 
     def initialize_api(self) -> None:

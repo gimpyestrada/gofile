@@ -41,7 +41,7 @@ class Config:
                 f"Please create a config.json file with your API credentials."
             )
         
-        with open(self.config_file, 'r') as f:
+        with open(self.config_file, 'r', encoding='utf-8') as f:
             self._config = json.load(f)
         
         return self._config
@@ -57,8 +57,8 @@ class Config:
         Returns:
             Configuration value or default
         """
-        config = self.load()
-        return config.get(key, default)
+        cfg = self.load()
+        return cfg.get(key, default)
     
     @property
     def api_token(self) -> str:
@@ -99,7 +99,7 @@ class Config:
         Args:
             config_data: Dictionary of configuration values to save
         """
-        with open(self.config_file, 'w') as f:
+        with open(self.config_file, 'w', encoding='utf-8') as f:
             json.dump(config_data, f, indent=2)
         
         self._config = config_data
@@ -112,9 +112,9 @@ class Config:
             key: Configuration key to update
             value: New value
         """
-        config = self.load()
-        config[key] = value
-        self.save(config)
+        cfg = self.load()
+        cfg[key] = value
+        self.save(cfg)
 
 
 def load_config(config_file: str = "config.json") -> Config:
@@ -138,5 +138,7 @@ if __name__ == "__main__":
         print(f"Account ID: {config.account_id}")
     except FileNotFoundError as e:
         print(f"Error: {e}")
-    except Exception as e:
+    except (json.JSONDecodeError, ValueError) as e:
         print(f"Error loading config: {e}")
+    except Exception as e:  # pylint: disable=broad-except
+        print(f"Unexpected error: {e}")

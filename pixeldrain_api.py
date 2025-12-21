@@ -5,7 +5,6 @@ Supports file uploads and list management.
 """
 
 import time
-import base64
 from pathlib import Path
 from typing import Optional, Dict, Any
 from io import BufferedReader
@@ -102,23 +101,23 @@ class PixeldrainAPI:
             
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
-                raise RateLimitException(f"Rate limit exceeded: {e}")
+                raise RateLimitException(f"Rate limit exceeded: {e}") from e
             elif response.status_code >= 500:
-                raise NetworkException(f"Server error: {e}")
+                raise NetworkException(f"Server error: {e}") from e
             else:
                 try:
                     error_data = response.json()
-                    raise PixeldrainHTTPError(f"HTTP Error {response.status_code}: {error_data}")
-                except:
-                    raise PixeldrainHTTPError(f"HTTP Error: {e}")
+                    raise PixeldrainHTTPError(f"HTTP Error {response.status_code}: {error_data}") from e
+                except Exception:
+                    raise PixeldrainHTTPError(f"HTTP Error: {e}") from e
         except requests.exceptions.ConnectionError as e:
-            raise NetworkException(f"Connection error: {e}")
+            raise NetworkException(f"Connection error: {e}") from e
         except requests.exceptions.Timeout as e:
-            raise NetworkException(f"Request timeout: {e}")
+            raise NetworkException(f"Request timeout: {e}") from e
         except requests.exceptions.RequestException as e:
-            raise NetworkException(f"Network error: {e}")
+            raise NetworkException(f"Network error: {e}") from e
         except Exception as e:
-            raise PixeldrainAPIError(f"Unexpected error: {e}")
+            raise PixeldrainAPIError(f"Unexpected error: {e}") from e
 
     def _make_request_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs):
         """Execute request with retry logic for rate limits and network errors."""
@@ -137,26 +136,26 @@ class PixeldrainAPI:
                 
                 return self._handle_response(response)
                 
-            except RateLimitException as e:
+            except RateLimitException:
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) * 5
                     time.sleep(wait_time)
                     continue
                 raise
-            except NetworkException as e:
+            except NetworkException:
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) * 2
                     time.sleep(wait_time)
                     continue
                 raise
 
-    def upload_file(self, file_path: str, list_id: Optional[str] = None) -> Dict[str, Any]:
+    def upload_file(self, file_path: str, _list_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Upload a file to Pixeldrain using PUT method.
 
         Args:
             file_path: Path to the file to upload
-            list_id: Optional list ID to add the file to after upload
+            _list_id: Optional list ID (unused - for future implementation)
 
         Returns:
             Dict containing file information including 'id' (file ID)
@@ -176,7 +175,7 @@ class PixeldrainAPI:
                 response = self.session.put(url, data=tracked_file, timeout=None)
                 return self._handle_response(response)
             except TimeoutError as e:
-                raise NetworkException(str(e))
+                raise NetworkException(str(e)) from e
 
     def get_file_info(self, file_id: str) -> Dict[str, Any]:
         """
