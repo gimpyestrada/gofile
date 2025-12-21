@@ -239,8 +239,8 @@ class BuzzheavierAPI:
                     response = self.session.put(url, data=progress_file, timeout=None)
                     return self._handle_response(response)
                     
-            except (ConnectionError, ConnectionResetError, ConnectionAbortedError, 
-                    TimeoutError, OSError) as e:
+            except requests.exceptions.RequestException as e:
+                # Catch all requests-related exceptions (ConnectionError, Timeout, etc.)
                 last_exception = e
                 error_msg = str(e)
                 
