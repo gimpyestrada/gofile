@@ -14,7 +14,8 @@ A powerful GUI application that lets you drag and drop APK files to automaticall
 - 🎯 **Mini Mode**: Compact always-on-top window for keeping on your desktop
 - 🤖 **Intelligent Folder Management**: Automatically organizes files on Gofile and Buzzheavier
 - 🔗 **Multi-Host Public Links**: Get public links from all enabled hosts immediately as they finish
-- 📊 **Dynamic Activity Logs**: Separate real-time logs for each enabled host
+- � **Copy All Links**: One-click button to copy all enabled host links to clipboard (one per line)
+- �📊 **Dynamic Activity Logs**: Separate real-time logs for each enabled host
 - ⚡ **Colored Status Indicators**: Text indicators (✓ success, ✗ failure, ⟳ uploading) for each host
 - 🔄 **Individual Retry**: Retry failed uploads on any host independently
 - 🚀 **Upload Speed Display**: Shows transfer speed in MB/s and Mbps for each host
@@ -119,7 +120,8 @@ A window will appear:
 5. Public links appear in separate text boxes as each host completes
 6. Status indicators show: ⟳ orange (uploading), ✓ green (success), or ✗ red (failure) for each host
 7. Use "Copy" to copy a link, "Open" to open in browser, or "Retry" to retry a failed upload
-8. Only enabled hosts are visible in the UI
+8. Use "Copy All Links" button to copy all enabled host links at once (one per line)
+9. Only enabled hosts are visible in the UI
 
 ### Mini Mode (Always on Top)
 
@@ -268,6 +270,13 @@ The uploader maintains separate local caches for each host:
 - UI updates dynamically to show only enabled hosts
 - Must have at least one host enabled
 
+### Copy All Links
+- One-click button in the Public Links header
+- Copies all enabled host links to clipboard
+- Formats links one per line for easy sharing
+- Uses base URLs (e.g., https://gofile.io) if no links generated yet
+- Perfect for quickly sharing all mirror links
+
 ### Mini Mode
 - Compact window with stacked layout
 - Always stays on top of other windows
@@ -387,6 +396,7 @@ If the folder structure seems outdated:
 - Keep the window open and ready - it uses minimal resources
 - Use **Mini Mode** to keep it accessible on your desktop while working
 - Configure which hosts to use based on your needs (more hosts = more redundancy)
+- Use **Copy All Links** button to quickly grab all mirror links for sharing
 - Gofile/Buzzheavier caches last 24 hours for fast folder lookups
 - You can drop multiple files one at a time (wait for each to complete)
 - The dynamic activity logs show detailed progress for enabled hosts only

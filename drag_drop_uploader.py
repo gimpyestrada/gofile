@@ -1308,6 +1308,36 @@ class DragDropUploader:
             self.root.clipboard_append(link)
             self.log(f"{host.capitalize()} link copied to clipboard!", "SUCCESS", host=host)
 
+    def copy_all_links(self) -> None:
+        """
+        Copy all enabled host links to clipboard, one per line.
+        Uses base URL if no link is generated yet.
+        """
+        links = []
+        
+        if self.gofile_enabled and self.gofile_enabled.get():
+            link = self.gofile_link_entry.get()
+            links.append(link if link else "https://gofile.io")
+        
+        if self.buzzheavier_enabled and self.buzzheavier_enabled.get():
+            link = self.buzzheavier_link_entry.get()
+            links.append(link if link else "https://buzzheavier.com")
+        
+        if self.pixeldrain_enabled and self.pixeldrain_enabled.get():
+            link = self.pixeldrain_link_entry.get()
+            links.append(link if link else "https://pixeldrain.com")
+        
+        if links:
+            all_links = "\n".join(links)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(all_links)
+            if self.gofile_enabled and self.gofile_enabled.get():
+                self.log(f"Copied {len(links)} link(s) to clipboard!", "SUCCESS", host="gofile")
+            elif self.buzzheavier_enabled and self.buzzheavier_enabled.get():
+                self.log(f"Copied {len(links)} link(s) to clipboard!", "SUCCESS", host="buzzheavier")
+            elif self.pixeldrain_enabled and self.pixeldrain_enabled.get():
+                self.log(f"Copied {len(links)} link(s) to clipboard!", "SUCCESS", host="pixeldrain")
+
     def open_link(self, host: str = "gofile") -> None:
         """
         Open link in browser.
@@ -1519,9 +1549,13 @@ class DragDropUploader:
             link_label = ttk.Label(link_header_frame, text="Public Links", font=('Arial', 10, 'bold'))
             link_label.grid(row=0, column=0, sticky=tk.W)
             
+            copy_all_btn = ttk.Button(link_header_frame, text="Copy All Links", 
+                                      command=self.copy_all_links, width=15)
+            copy_all_btn.grid(row=0, column=1, sticky=tk.E, padx=(5, 0))
+            
             settings_btn = ttk.Button(link_header_frame, text="⚙️", width=3,
                                      command=self.show_settings_menu)
-            settings_btn.grid(row=0, column=1, sticky=tk.E, padx=(5, 0))
+            settings_btn.grid(row=0, column=2, sticky=tk.E, padx=(5, 0))
             
             self.link_frame = ttk.Frame(self.main_frame, padding="10")
             self.link_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
