@@ -1018,11 +1018,13 @@ class DragDropUploader:
         """
         self.update_status("Processing...")
         
-        # Clear both link entries
+        # Clear all link entries
         if self.gofile_link_entry:
             self.gofile_link_entry.delete(0, tk.END)
         if self.buzzheavier_link_entry:
             self.buzzheavier_link_entry.delete(0, tk.END)
+        if self.pixeldrain_link_entry:
+            self.pixeldrain_link_entry.delete(0, tk.END)
 
         try:
             file_path = file_path.strip()
