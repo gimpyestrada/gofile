@@ -806,14 +806,14 @@ class DragDropUploader:
             # Upload file
             file_size_bytes = os.path.getsize(file_path)
             file_size_mb = file_size_bytes / (1024 * 1024)
-            self.log(f"Uploading ({round(file_size_mb)} MB)...", host="gofile")
+            self.log(f"Uploading - {round(file_size_mb)} MB...", host="gofile")
 
             start_time = time.time()
             self.api.upload_file(file_path, folder_id=version_id)
             upload_time = time.time() - start_time
 
             upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
-            self.log(f"Upload complete! ({upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps)", "SUCCESS", host="gofile")
+            self.log(f"Upload complete! - {upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps", "SUCCESS", host="gofile")
 
             # Make folder public and get link
             self.log("Making folder public...", host="gofile")
@@ -902,14 +902,14 @@ class DragDropUploader:
             # Upload file
             file_size_bytes = os.path.getsize(file_path)
             file_size_mb = file_size_bytes / (1024 * 1024)
-            self.log(f"Uploading ({round(file_size_mb)} MB)...", host="buzzheavier")
+            self.log(f"Uploading - {round(file_size_mb)} MB...", host="buzzheavier")
 
             start_time = time.time()
             result = self.buzzheavier_api.upload_file(file_path, parent_id=version_id)
             upload_time = time.time() - start_time
 
             upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
-            self.log(f"Upload complete! ({upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps)", "SUCCESS", host="buzzheavier")
+            self.log(f"Upload complete! - {upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps", "SUCCESS", host="buzzheavier")
 
             # Get file ID and generate public link
             file_id = result.get('id')
@@ -965,14 +965,14 @@ class DragDropUploader:
         try:
             file_size_bytes = os.path.getsize(file_path)
             file_size_mb = file_size_bytes / (1024 * 1024)
-            self.log(f"Uploading ({round(file_size_mb)} MB)...", host="pixeldrain")
+            self.log(f"Uploading - {round(file_size_mb)} MB...", host="pixeldrain")
 
             start_time = time.time()
             result = self.pixeldrain_api.upload_file(file_path)
             upload_time = time.time() - start_time
 
             upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
-            self.log(f"Upload complete! ({upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps)", "SUCCESS", host="pixeldrain")
+            self.log(f"Upload complete! - {upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps", "SUCCESS", host="pixeldrain")
             
             # Get file ID and generate public link
             file_id = result.get('id')
@@ -1355,6 +1355,25 @@ class DragDropUploader:
             elif self.pixeldrain_enabled and self.pixeldrain_enabled.get():
                 self.log(f"Copied {len(links)} link(s) to clipboard!", "SUCCESS", host="pixeldrain")
 
+    def clear_all(self) -> None:
+        """Clear all public links and reset logs."""
+        if self.gofile_link_entry:
+            self.gofile_link_entry.delete(0, tk.END)
+        if self.buzzheavier_link_entry:
+            self.buzzheavier_link_entry.delete(0, tk.END)
+        if self.pixeldrain_link_entry:
+            self.pixeldrain_link_entry.delete(0, tk.END)
+        
+        if self.gofile_log_text:
+            self.gofile_log_text.delete(1.0, tk.END)
+        if self.buzzheavier_log_text:
+            self.buzzheavier_log_text.delete(1.0, tk.END)
+        if self.pixeldrain_log_text:
+            self.pixeldrain_log_text.delete(1.0, tk.END)
+        
+        if self.log_text and self.log_text != self.gofile_log_text:
+            self.log_text.delete(1.0, tk.END)
+
     def open_link(self, host: str = "gofile") -> None:
         """
         Open link in browser.
@@ -1570,9 +1589,13 @@ class DragDropUploader:
                                       command=self.copy_all_links, width=15)
             copy_all_btn.grid(row=0, column=1, sticky=tk.E, padx=(5, 0))
             
+            clear_btn = ttk.Button(link_header_frame, text="Clear", 
+                                   command=self.clear_all, width=8)
+            clear_btn.grid(row=0, column=2, sticky=tk.E, padx=(5, 0))
+            
             settings_btn = ttk.Button(link_header_frame, text="⚙️", width=3,
                                      command=self.show_settings_menu)
-            settings_btn.grid(row=0, column=2, sticky=tk.E, padx=(5, 0))
+            settings_btn.grid(row=0, column=3, sticky=tk.E, padx=(5, 0))
             
             self.link_frame = ttk.Frame(self.main_frame, padding="10")
             self.link_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
