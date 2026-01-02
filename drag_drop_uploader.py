@@ -1102,6 +1102,9 @@ class DragDropUploader:
             self.log(f"Package: {package}")
             self.log(f"Version: {version}")
 
+            # Update file info immediately
+            self.update_file_info(file_path)
+
             # Store for retry functionality
             self.last_upload_file_path = file_path
             self.last_upload_parsed_info = parsed
@@ -1170,7 +1173,6 @@ class DragDropUploader:
                 self.log("Upload failed on both hosts", "ERROR")
             self.log("=" * 50)
             
-            self.update_file_info(file_path)
             self.update_status("Ready - Drop APK file here")
 
         except (OSError, IOError, RuntimeError) as e:
