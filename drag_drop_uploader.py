@@ -20,6 +20,44 @@ from buzzheavier_api import BuzzheavierAPI, NetworkException
 from config_loader import load_config
 
 
+class Tooltip:
+    """Simple tooltip widget for tkinter."""
+    
+    def __init__(self, widget, text):
+        """Initialize tooltip with widget and text."""
+        self.widget = widget
+        self.text = text
+        self.tipwindow = None
+        self.id = None
+        self.x = self.y = 0
+        
+        self.widget.bind("<Enter>", self.showtip, add=True)
+        self.widget.bind("<Leave>", self.hidetip, add=True)
+    
+    def showtip(self, event=None):
+        """Display the tooltip."""
+        if self.tipwindow or not self.text:
+            return
+        
+        x = self.widget.winfo_rootx() + self.widget.winfo_width() // 2
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        
+        self.tipwindow = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        
+        label = tk.Label(tw, text=self.text, background="lightyellow", 
+                        relief=tk.SOLID, borderwidth=1, font=("Arial", 8))
+        label.pack(ipadx=5, ipady=2)
+    
+    def hidetip(self, event=None):
+        """Hide the tooltip."""
+        tw = self.tipwindow
+        self.tipwindow = None
+        if tw:
+            tw.destroy()
+
+
 class DragDropUploader:
     """Drag and drop uploader with GUI."""
 
@@ -115,6 +153,9 @@ class DragDropUploader:
         self.log_frame = None
         self.mini_frame = None
         self.mini_status_label = None
+        self.file_info_frame = None
+        self.file_name_label = None
+        self.file_size_label = None
         
         # Store log column widgets for dynamic visibility
         self.gofile_log_label = None
@@ -1128,6 +1169,8 @@ class DragDropUploader:
             else:
                 self.log("Upload failed on both hosts", "ERROR")
             self.log("=" * 50)
+            
+            self.update_file_info(file_path)
             self.update_status("Ready - Drop APK file here")
 
         except (OSError, IOError, RuntimeError) as e:
@@ -1325,6 +1368,34 @@ class DragDropUploader:
             self.root.clipboard_append(link)
             self.log(f"{host.capitalize()} link copied to clipboard!", "SUCCESS", host=host)
 
+    def copy_file_name(self) -> None:
+        """Copy file name to clipboard."""
+        if self.file_name_label:
+            file_name = self.file_name_label.cget("text")
+            if file_name:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(file_name)
+
+    def copy_file_size(self) -> None:
+        """Copy file size to clipboard."""
+        if self.file_size_label:
+            file_size = self.file_size_label.cget("text")
+            if file_size:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(file_size)
+
+    def update_file_info(self, file_path: str) -> None:
+        """Update file info display with current file name and size."""
+        if not self.file_name_label or not self.file_size_label:
+            return
+        
+        file_name = os.path.basename(file_path)
+        file_size_bytes = os.path.getsize(file_path)
+        file_size_mb = round(file_size_bytes / (1024 * 1024))
+        
+        self.file_name_label.config(text=file_name)
+        self.file_size_label.config(text=f"{file_size_mb} MB")
+
     def copy_all_links(self) -> None:
         """
         Copy all enabled host links to clipboard, one per line.
@@ -1373,6 +1444,11 @@ class DragDropUploader:
         
         if self.log_text and self.log_text != self.gofile_log_text:
             self.log_text.delete(1.0, tk.END)
+        
+        if self.file_name_label:
+            self.file_name_label.config(text="")
+        if self.file_size_label:
+            self.file_size_label.config(text="")
 
     def open_link(self, host: str = "gofile") -> None:
         """
@@ -1539,7 +1615,7 @@ class DragDropUploader:
             self.main_frame = ttk.Frame(self.root, padding="10")
             self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
             self.main_frame.columnconfigure(0, weight=1)
-            self.main_frame.rowconfigure(3, weight=1)
+            self.main_frame.rowconfigure(4, weight=1)
 
             # Drop zone
             self.drop_frame = ttk.LabelFrame(
@@ -1596,6 +1672,7 @@ class DragDropUploader:
             settings_btn = ttk.Button(link_header_frame, text="⚙️", width=3,
                                      command=self.show_settings_menu)
             settings_btn.grid(row=0, column=3, sticky=tk.E, padx=(5, 0))
+            Tooltip(settings_btn, "Select Hosts")
             
             self.link_frame = ttk.Frame(self.main_frame, padding="10")
             self.link_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
@@ -1704,9 +1781,47 @@ class DragDropUploader:
                                                command=self.retry_pixeldrain, width=6)
             pixeldrain_retry_btn.grid(row=0, column=2, padx=2)
 
+            # File info frame (file name and size boxes)
+            self.file_info_frame = ttk.Frame(self.main_frame, padding="0")
+            self.file_info_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 2))
+            self.file_info_frame.columnconfigure(0, weight=1)
+            self.file_info_frame.columnconfigure(1, weight=1)
+
+            # File name box
+            file_name_box = ttk.Frame(self.file_info_frame, padding="5")
+            file_name_box.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+            file_name_box.columnconfigure(0, weight=1)
+
+            file_name_label_header = ttk.Label(file_name_box, text="File Name", font=('Arial', 8, 'bold'))
+            file_name_label_header.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 3))
+
+            self.file_name_label = ttk.Label(file_name_box, text="", font=('Arial', 9))
+            self.file_name_label.grid(row=1, column=0, sticky=(tk.W, tk.E))
+
+            copy_name_btn = ttk.Button(file_name_box, text="📋", width=3,
+                                       command=self.copy_file_name)
+            copy_name_btn.grid(row=1, column=1, padx=(5, 0))
+            Tooltip(copy_name_btn, "Copy file name")
+
+            # File size box
+            file_size_box = ttk.Frame(self.file_info_frame, padding="5")
+            file_size_box.grid(row=0, column=1, sticky=(tk.W, tk.E))
+            file_size_box.columnconfigure(0, weight=1)
+
+            file_size_label_header = ttk.Label(file_size_box, text="File Size", font=('Arial', 8, 'bold'))
+            file_size_label_header.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 3))
+
+            self.file_size_label = ttk.Label(file_size_box, text="", font=('Arial', 9))
+            self.file_size_label.grid(row=1, column=0, sticky=(tk.W, tk.E))
+
+            copy_size_btn = ttk.Button(file_size_box, text="📋", width=3,
+                                       command=self.copy_file_size)
+            copy_size_btn.grid(row=1, column=1, padx=(5, 0))
+            Tooltip(copy_size_btn, "Copy file size")
+
             # Log frame (tri-column with dynamic visibility)
             self.log_frame = ttk.LabelFrame(self.main_frame, text="Activity Logs", padding="10")
-            self.log_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+            self.log_frame.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
             self.log_frame.columnconfigure(0, weight=1)
             self.log_frame.columnconfigure(1, weight=1)
             self.log_frame.columnconfigure(2, weight=1)
