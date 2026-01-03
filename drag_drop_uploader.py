@@ -1179,6 +1179,20 @@ class DragDropUploader:
             self.log(f"Upload failed: {e}", "ERROR")
             self.update_status("Ready - Drop APK file here")
 
+    def browse_file(self) -> None:
+        """Open file dialog to browse for APK file."""
+        from tkinter import filedialog
+        
+        file_path = filedialog.askopenfilename(
+            title="Select APK File",
+            filetypes=[("APK Files", "*.apk"), ("All Files", "*.*")]
+        )
+        
+        if file_path:
+            upload_thread = threading.Thread(target=self.upload_file, args=(file_path,))
+            upload_thread.daemon = True
+            upload_thread.start()
+
     def on_drop(self, event) -> None:
         """Handle file drop event."""
         files = self.root.tk.splitlist(event.data)
@@ -1626,12 +1640,14 @@ class DragDropUploader:
             self.drop_frame.grid(row=0, column=0, sticky=(tk.W, tk.E),
                                 pady=(0, 10))
             self.drop_frame.columnconfigure(0, weight=1)
+            self.drop_frame.configure(cursor="hand2")
 
             drop_label = ttk.Label(
                 self.drop_frame,
-                text="📁 Drag & Drop APK Files Here",
+                text="📁 Drop APK File Here or Click to Browse",
                 font=('Arial', 14, 'bold'),
-                anchor=tk.CENTER
+                anchor=tk.CENTER,
+                cursor="hand2"
             )
             drop_label.grid(row=0, column=0, pady=20)
 
@@ -1639,7 +1655,8 @@ class DragDropUploader:
                 self.drop_frame,
                 text="Initializing...",
                 font=('Arial', 10),
-                anchor=tk.CENTER
+                anchor=tk.CENTER,
+                cursor="hand2"
             )
             self.status_label.grid(row=1, column=0)
 
@@ -1651,6 +1668,11 @@ class DragDropUploader:
                 command=self.toggle_mini_mode
             )
             mini_check.grid(row=2, column=0, pady=(10, 0))
+
+            # Make drop zone clickable
+            self.drop_frame.bind("<Button-1>", lambda e: self.browse_file())
+            drop_label.bind("<Button-1>", lambda e: self.browse_file())
+            self.status_label.bind("<Button-1>", lambda e: self.browse_file())
 
             # Enable drag and drop on drop frame
             self.register_drop_target(self.drop_frame, DND_FILES)
