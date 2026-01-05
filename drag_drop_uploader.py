@@ -1814,33 +1814,35 @@ class DragDropUploader:
             # File name box
             file_name_box = ttk.Frame(self.file_info_frame, padding="5")
             file_name_box.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
-            file_name_box.columnconfigure(0, weight=1)
+            file_name_box.columnconfigure(0, weight=0)
+            file_name_box.columnconfigure(1, weight=1)
 
             file_name_label_header = ttk.Label(file_name_box, text="File Name", font=('Arial', 8, 'bold'))
             file_name_label_header.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 3))
 
-            self.file_name_label = ttk.Label(file_name_box, text="", font=('Arial', 9))
-            self.file_name_label.grid(row=1, column=0, sticky=(tk.W, tk.E))
-
             copy_name_btn = ttk.Button(file_name_box, text="📋", width=3,
                                        command=self.copy_file_name)
-            copy_name_btn.grid(row=1, column=1, padx=(5, 0))
+            copy_name_btn.grid(row=1, column=0, padx=(0, 5))
+
+            self.file_name_label = ttk.Label(file_name_box, text="", font=('Arial', 9))
+            self.file_name_label.grid(row=1, column=1, sticky=(tk.W, tk.E))
             Tooltip(copy_name_btn, "Copy file name")
 
             # File size box
             file_size_box = ttk.Frame(self.file_info_frame, padding="5")
             file_size_box.grid(row=0, column=1, sticky=(tk.W, tk.E))
-            file_size_box.columnconfigure(0, weight=1)
+            file_size_box.columnconfigure(0, weight=0)
+            file_size_box.columnconfigure(1, weight=1)
 
             file_size_label_header = ttk.Label(file_size_box, text="File Size", font=('Arial', 8, 'bold'))
             file_size_label_header.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 3))
 
-            self.file_size_label = ttk.Label(file_size_box, text="", font=('Arial', 9))
-            self.file_size_label.grid(row=1, column=0, sticky=(tk.W, tk.E))
-
             copy_size_btn = ttk.Button(file_size_box, text="📋", width=3,
                                        command=self.copy_file_size)
-            copy_size_btn.grid(row=1, column=1, padx=(5, 0))
+            copy_size_btn.grid(row=1, column=0, padx=(0, 5))
+
+            self.file_size_label = ttk.Label(file_size_box, text="", font=('Arial', 9))
+            self.file_size_label.grid(row=1, column=1, sticky=(tk.W, tk.E))
             Tooltip(copy_size_btn, "Copy file size")
 
             # Log frame (tri-column with dynamic visibility)
