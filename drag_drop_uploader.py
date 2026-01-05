@@ -10,13 +10,15 @@ import sys
 import json
 import time
 import tkinter as tk
+import webbrowser
+from collections import deque
 from tkinter import ttk, scrolledtext, messagebox
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import threading
 from gofile_api import GofileAPI
-from buzzheavier_api import BuzzheavierAPI, NetworkException
+from buzzheavier_api import BuzzheavierAPI, BuzzheavierHTTPError, NetworkException
 from config_loader import load_config
 
 
@@ -114,10 +116,15 @@ class DragDropUploader:
         self._gofile_ready = False
         self._buzzheavier_ready = False
         self._pixeldrain_ready = False
+        self.queue_lock = threading.Lock()
+        self.upload_queue = deque()
+        self.queue_processing = False
+        self.queue_thread = None
 
         # Upload tracking for retry functionality
         self.last_upload_file_path = None
         self.last_upload_parsed_info = None
+        self.last_upload_status = {}
         
         # Host toggle settings
         self.gofile_enabled = None
@@ -207,6 +214,12 @@ class DragDropUploader:
         # Helper function to add message to a log widget
         def add_to_log(log_widget):
             if log_widget:
+                if "url" not in log_widget.tag_names():
+                    log_widget.tag_config("url", foreground="blue", underline=True)
+                    log_widget.tag_bind("url", "<Button-1>", self._open_url_from_event, add="+")
+                    log_widget.tag_bind("url", "<Enter>", lambda e: e.widget.config(cursor="hand2"), add="+")
+                    log_widget.tag_bind("url", "<Leave>", lambda e: e.widget.config(cursor=""), add="+")
+
                 log_widget.insert(tk.END, formatted_msg)
                 log_widget.see(tk.END)
 
@@ -219,6 +232,18 @@ class DragDropUploader:
                     line_start = log_widget.index("end-2c linestart")
                     line_end = log_widget.index("end-1c lineend")
                     log_widget.tag_add("error", line_start, line_end)
+
+                link_match = re.search(r"(https?://\S+)", formatted_msg)
+                if link_match:
+                    link_text = link_match.group(1)
+                    line_start = log_widget.index("end-2c linestart")
+                    line_end = log_widget.index("end-1c lineend")
+                    line_text = log_widget.get(line_start, line_end)
+                    pos = line_text.find(link_text)
+                    if pos >= 0:
+                        start_idx = f"{line_start}+{pos}c"
+                        end_idx = f"{start_idx}+{len(link_text)}c"
+                        log_widget.tag_add("url", start_idx, end_idx)
 
         # Route to appropriate log(s)
         if host == "gofile" or host == "both":
@@ -851,6 +876,29 @@ class DragDropUploader:
                 self.root.after(0, lambda: self.mini_pixeldrain_indicator.config(
                     text=indicator, foreground=color))
 
+    def _open_url_from_event(self, event):
+        """Open clicked URL inside a log widget."""
+        widget = event.widget
+        index = widget.index("current")
+
+        # Find the tagged range that includes the click position
+        start_end = None
+        if "url" in widget.tag_names(index):
+            prev_range = widget.tag_prevrange("url", index)
+            if prev_range and len(prev_range) == 2 and widget.compare(prev_range[0], "<=", index) and widget.compare(index, "<", prev_range[1]):
+                start_end = prev_range
+            else:
+                next_range = widget.tag_nextrange("url", index)
+                if next_range and len(next_range) == 2 and widget.compare(next_range[0], "<=", index) and widget.compare(index, "<", next_range[1]):
+                    start_end = next_range
+
+        if start_end:
+            url = widget.get(start_end[0], start_end[1]).strip()
+            if url.startswith("http"):
+                webbrowser.open(url)
+                return "break"
+        return "break"
+
     def _upload_to_gofile(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
         """
         Upload file to Gofile.
@@ -918,6 +966,7 @@ class DragDropUploader:
 
             if link:
                 self.log("Public link ready", "SUCCESS", host="gofile")
+                self.log(f"Link: {link}", "SUCCESS", host="gofile")
                 # Update link entry immediately (thread-safe GUI update)
                 if self.gofile_link_entry:
                     self.root.after(0, lambda: self._update_link_entry(self.gofile_link_entry, link))
@@ -964,12 +1013,28 @@ class DragDropUploader:
             parent_id = self.buzzheavier_folder_structure.get(package)
 
             if not parent_id:
+                reused_existing = False
                 self.log(f"Creating parent folder: {package}", host="buzzheavier")
-                result = self.buzzheavier_api.create_folder(self.buzzheavier_root_folder_id, package)
-                parent_id = result.get('id')
+                try:
+                    result = self.buzzheavier_api.create_folder(self.buzzheavier_root_folder_id, package)
+                    parent_id = result.get('id')
+                except BuzzheavierHTTPError as e:
+                    if "409" in str(e) or "Conflict" in str(e):
+                        self.log("Parent folder already exists; reusing it", "WARNING", host="buzzheavier")
+                        root_content = self.buzzheavier_api.get_content(self.buzzheavier_root_folder_id)
+                        children = root_content.get('children', [])
+                        existing = next((c for c in children if c.get('isDirectory') and c.get('name') == package), None)
+                        parent_id = existing.get('id') if existing else None
+                        reused_existing = parent_id is not None
+                    else:
+                        raise
+
                 if parent_id:
                     self.buzzheavier_folder_structure[package] = parent_id
-                    self.log("Created parent folder", "SUCCESS", host="buzzheavier")
+                    if reused_existing:
+                        self.log("Using existing parent folder", "SUCCESS", host="buzzheavier")
+                    else:
+                        self.log("Created parent folder", "SUCCESS", host="buzzheavier")
                 else:
                     self.log("Failed to create parent folder", "ERROR", host="buzzheavier")
                     return None
@@ -1020,6 +1085,7 @@ class DragDropUploader:
             if file_id:
                 link = f"https://buzzheavier.com/{file_id}"
                 self.log("Public link ready", "SUCCESS", host="buzzheavier")
+                self.log(f"Link: {link}", "SUCCESS", host="buzzheavier")
                 # Update link entry immediately (thread-safe GUI update)
                 if self.buzzheavier_link_entry:
                     self.root.after(0, lambda: self._update_link_entry(self.buzzheavier_link_entry, link))
@@ -1083,6 +1149,7 @@ class DragDropUploader:
             if file_id:
                 link = f"https://pixeldrain.com/u/{file_id}"
                 self.log("Public link ready", "SUCCESS", host="pixeldrain")
+                self.log(f"Link: {link}", "SUCCESS", host="pixeldrain")
                 # Update link entry immediately (thread-safe GUI update)
                 if self.pixeldrain_link_entry:
                     self.root.after(0, lambda: self._update_link_entry(self.pixeldrain_link_entry, link))
@@ -1121,6 +1188,11 @@ class DragDropUploader:
             The full path to the APK file to upload.
         """
         self.update_status("Processing...")
+        self.last_upload_status = {
+            "gofile": None,
+            "buzzheavier": None,
+            "pixeldrain": None,
+        }
         
         # Clear all link entries
         if self.gofile_link_entry:
@@ -1156,6 +1228,7 @@ class DragDropUploader:
                 self.log("Could not parse APK filename", "ERROR")
                 self.log("Expected format: package-version-suffix.apk", "ERROR")
                 self.update_status("Ready - Drop APK file here")
+                self.last_upload_status = {}
                 return
 
             package = parsed['package']
@@ -1219,6 +1292,12 @@ class DragDropUploader:
             buzzheavier_thread.join()
             pixeldrain_thread.join()
 
+            self.last_upload_status = {
+                "gofile": bool(gofile_link) if (self.gofile_enabled and self.gofile_enabled.get()) else None,
+                "buzzheavier": bool(buzzheavier_link) if (self.buzzheavier_enabled and self.buzzheavier_enabled.get()) else None,
+                "pixeldrain": bool(pixeldrain_link) if (self.pixeldrain_enabled and self.pixeldrain_enabled.get()) else None,
+            }
+
             # Log completion summary with emoji status
             self.log("=" * 50)
             gofile_emoji = "🟢" if gofile_link else "🔴"
@@ -1252,30 +1331,100 @@ class DragDropUploader:
         )
         
         if file_path:
-            upload_thread = threading.Thread(target=self.upload_file, args=(file_path,))
-            upload_thread.daemon = True
-            upload_thread.start()
+            self._enqueue_files([file_path])
+
+    def _sanitize_dropped_path(self, raw_path: str) -> str:
+        """Normalize dropped file paths by trimming whitespace and braces."""
+        if not raw_path:
+            return ""
+
+        cleaned_path = raw_path.strip()
+        if cleaned_path.startswith('{') and cleaned_path.endswith('}'):
+            return cleaned_path[1:-1]
+        return cleaned_path
+
+    def _start_queue_worker(self) -> None:
+        """Start a background worker to process queued files sequentially."""
+        with self.queue_lock:
+            if self.queue_processing:
+                return
+            self.queue_processing = True
+
+        worker = threading.Thread(target=self._process_upload_queue, daemon=True)
+        worker.start()
+        self.queue_thread = worker
+
+    def _enqueue_files(self, file_paths: List[str]) -> None:
+        """Enqueue valid APK files and kick off the queue worker if idle."""
+        if not file_paths:
+            return
+
+        valid_files = []
+        seen_paths = set()
+
+        for raw_path in file_paths:
+            cleaned_path = self._sanitize_dropped_path(raw_path)
+            if not cleaned_path:
+                continue
+
+            if cleaned_path in seen_paths:
+                continue
+            seen_paths.add(cleaned_path)
+
+            if not cleaned_path.lower().endswith('.apk'):
+                self.log(f"Skipping non-APK: {cleaned_path}", "ERROR")
+                continue
+            if not os.path.exists(cleaned_path):
+                self.log(f"Skipping missing file: {cleaned_path}", "ERROR")
+                continue
+            if not os.path.isfile(cleaned_path):
+                self.log(f"Skipping path (not a file): {cleaned_path}", "ERROR")
+                continue
+
+            valid_files.append(cleaned_path)
+
+        if not valid_files:
+            self.log("No valid APK files to upload", "ERROR")
+            return
+
+        with self.queue_lock:
+            was_processing = self.queue_processing
+            for path in valid_files:
+                self.upload_queue.append(path)
+
+        self.log(f"Queued {len(valid_files)} file(s) for upload", "INFO")
+
+        if not was_processing:
+            self._start_queue_worker()
+
+    def _process_upload_queue(self) -> None:
+        """Drain the upload queue one file at a time."""
+        batch_cleared = False
+
+        try:
+            while True:
+                with self.queue_lock:
+                    if not self.upload_queue:
+                        self.queue_processing = False
+                        self.log("Upload queue complete", "SUCCESS")
+                        return
+                    next_file = self.upload_queue.popleft()
+
+                if not batch_cleared and self.root:
+                    self.root.after(0, self.clear_all)
+                    batch_cleared = True
+
+                self.upload_file(next_file)
+        finally:
+            with self.queue_lock:
+                self.queue_processing = False
 
     def on_drop(self, event) -> None:
         """Handle file drop event."""
         files = self.root.tk.splitlist(event.data)
 
         if files:
-            file_path = files[0]
-
-            # Remove curly braces if present (Windows)
-            if file_path.startswith('{') and file_path.endswith('}'):
-                file_path = file_path[1:-1]
-
-            # Check if it's an APK file
-            if not file_path.lower().endswith('.apk'):
-                self.log("Only APK files are supported", "ERROR")
-                return
-
-            # Upload in separate thread to avoid blocking GUI
-            upload_thread = threading.Thread(target=self.upload_file, args=(file_path,))
-            upload_thread.daemon = True
-            upload_thread.start()
+            self._enqueue_files(list(files))
 
     def _initialize_gofile(self) -> bool:
         """
@@ -1559,6 +1708,14 @@ class DragDropUploader:
             self.log("No previous upload to retry", "WARNING", host="gofile")
             return
 
+        status = self.last_upload_status.get("gofile")
+        if status is True:
+            self.log("Last Gofile upload succeeded; nothing to retry", "INFO", host="gofile")
+            return
+        if status is None:
+            self.log("Gofile upload was skipped; nothing to retry", "INFO", host="gofile")
+            return
+
         if not self.api or not self.root_folder_id:
             self.log("Gofile not initialized", "ERROR", host="gofile")
             return
@@ -1591,6 +1748,14 @@ class DragDropUploader:
             self.log("No previous upload to retry", "WARNING", host="buzzheavier")
             return
 
+        status = self.last_upload_status.get("buzzheavier")
+        if status is True:
+            self.log("Last Buzzheavier upload succeeded; nothing to retry", "INFO", host="buzzheavier")
+            return
+        if status is None:
+            self.log("Buzzheavier upload was skipped; nothing to retry", "INFO", host="buzzheavier")
+            return
+
         if not self.buzzheavier_api or not self.buzzheavier_root_folder_id:
             self.log("Buzzheavier not initialized", "ERROR", host="buzzheavier")
             return
@@ -1621,6 +1786,14 @@ class DragDropUploader:
         """Retry upload to Pixeldrain for the last uploaded file."""
         if not self.last_upload_file_path or not self.last_upload_parsed_info:
             self.log("No previous upload to retry", "WARNING", host="pixeldrain")
+            return
+
+        status = self.last_upload_status.get("pixeldrain")
+        if status is True:
+            self.log("Last Pixeldrain upload succeeded; nothing to retry", "INFO", host="pixeldrain")
+            return
+        if status is None:
+            self.log("Pixeldrain upload was skipped; nothing to retry", "INFO", host="pixeldrain")
             return
 
         if not self.pixeldrain_api:

@@ -11,6 +11,7 @@ A powerful GUI application that lets you drag and drop APK files to automaticall
 - 🚀 **Multi-Host Uploads**: Automatically uploads to Gofile, Buzzheavier, and/or Pixeldrain in parallel
 - ⚙️ **Configurable Hosts**: Choose which hosts to upload to via settings menu
 - 📁 **Drag & Drop Interface**: Just drag APK files onto the window
+- 📚 **Multi-File Drop Queue**: Drop multiple APKs at once; uploads run sequentially
 - 🎯 **Mini Mode**: Compact always-on-top window for keeping on your desktop
 - 🤖 **Intelligent Folder Management**: Automatically organizes files on Gofile and Buzzheavier
 - 🔗 **Multi-Host Public Links**: Get public links from all enabled hosts immediately as they finish
@@ -109,7 +110,7 @@ python drag_drop_uploader.py
 A window will appear:
 1. Wait for enabled hosts to initialize (shows connection status)
 2. Click the gear icon (⚙️) to configure which hosts to use
-3. Drag and drop an APK file onto the drop zone
+3. Drag and drop one or more APK files onto the drop zone
 4. Watch activity logs for each enabled host simultaneously:
    - Parses the APK filename
    - Finds or creates the parent folder (Gofile/Buzzheavier)
@@ -122,6 +123,7 @@ A window will appear:
 7. Use "Copy" to copy a link, "Open" to open in browser, or "Retry" to retry a failed upload
 8. Use "Copy All Links" button to copy all enabled host links at once (one per line)
 9. Only enabled hosts are visible in the UI
+10. Non-APK drops are skipped automatically with highlighted log entries
 
 ### Mini Mode (Always on Top)
 
@@ -168,6 +170,7 @@ Both Gofile and Buzzheavier maintain identical folder structures for consistency
    - Versions can be numeric, alphanumeric, or words (e.g., `prologue`)
    - Known trailing suffix tokens like `-release`, `-fix`, `-hotfix`, `-patch` are ignored for version parsing
    - Example: `com.example.myapp-2.0.1-release.apk` → version `2.0.1`; `com.estrada777.inizialization-prologue-release.apk` → version `prologue`
+   - Dropped batches are queued; files upload sequentially while logs accumulate
 
 2. **Parallel Upload to Enabled Hosts**:
    - Creates separate threads for simultaneous uploads
