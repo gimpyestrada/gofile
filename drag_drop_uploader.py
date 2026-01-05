@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import threading
 from gofile_api import GofileAPI
 from buzzheavier_api import BuzzheavierAPI, NetworkException
@@ -412,7 +412,9 @@ class DragDropUploader:
         Parameters
         ----------
         filename : str
-            The APK filename to parse (e.g., 'com.app.name-1.0-release.apk').
+            The APK filename to parse (e.g.,
+            'com.app.name-1.0-release.apk' or
+            'com.estrada777.projectmyriam-ch.end.03+p-release.apk').
 
         Returns
         -------
@@ -425,20 +427,35 @@ class DragDropUploader:
 
         name_without_ext = filename[:-4]
 
-        # Pattern: com.company.app-version-suffix
-        match = re.match(r'^(.+?)-([0-9]+(?:\.[0-9]+)*(?:[a-zA-Z0-9\+\.]*))(?:-.*)?$', name_without_ext)
+        if '-' not in name_without_ext:
+            return None
 
-        if match:
-            package = match.group(1)
-            version = match.group(2)
-            return {
-                'package': package,
-                'version': version,
-                'full_name': name_without_ext,
-                'filename': filename
-            }
+        package, remainder = name_without_ext.split('-', 1)
 
-        return None
+        if not remainder:
+            return None
+
+        version_tokens = remainder.split('-')
+        suffix_tokens = {'release', 'fix', 'hotfix', 'bugfix', 'patch', 'patched'}
+
+        while version_tokens and version_tokens[-1].lower() in suffix_tokens:
+            version_tokens.pop()
+
+        if not version_tokens:
+            return None
+
+        version = '-'.join(version_tokens).strip()
+        package = package.strip()
+
+        if not package or not version:
+            return None
+
+        return {
+            'package': package,
+            'version': version,
+            'full_name': name_without_ext,
+            'filename': filename
+        }
 
     def save_folder_cache(self, host: str, root_folder_id: str, folders: Dict) -> None:
         """
@@ -661,7 +678,28 @@ class DragDropUploader:
             self.log(f"Error creating parent folder: {e}", "ERROR")
             return None
 
-    def create_version_folder(self, parent_id: str, version_folder_name: str) -> Optional[str]:
+    def _normalize_version_folder_name(self, folder_name: str) -> str:
+        """
+        Normalize version folder names by removing trailing '-release'.
+
+        Parameters
+        ----------
+        folder_name : str
+            Proposed folder name.
+
+        Returns
+        -------
+        str
+            Normalized folder name without a trailing '-release' token.
+        """
+        return re.sub(r'(?i)-release$', '', folder_name)
+
+    def create_version_folder(
+        self,
+        parent_id: str,
+        version_folder_name: str,
+        alt_version_names: Optional[List[str]] = None
+    ) -> Optional[str]:
         """
         Create or get version folder within a parent folder.
 
@@ -671,6 +709,9 @@ class DragDropUploader:
             The parent folder ID where the version folder will be created.
         version_folder_name : str
             The name for the version folder (e.g., 'com.app.name-1.0-release').
+        alt_version_names : Optional[List[str]]
+            Alternative names that should be treated as equivalent (used to
+            detect legacy folders such as ones that include '-release').
 
         Returns
         -------
@@ -687,10 +728,15 @@ class DragDropUploader:
                 return None
 
             children = parent_contents.get('children', {})
+            candidate_names = [version_folder_name]
+            if alt_version_names:
+                candidate_names.extend(alt_version_names)
 
             # Check if version folder already exists
             for child_id, child_data in children.items():
-                if child_data.get('type') == 'folder' and child_data.get('name') == version_folder_name:
+                if child_data.get('type') != 'folder':
+                    continue
+                if child_data.get('name') in candidate_names:
                     self.log(f"Version folder already exists: {version_folder_name}")
                     return child_id
 
@@ -838,8 +884,14 @@ class DragDropUploader:
             else:
                 self.log(f"Found parent folder: {package}", host="gofile")
 
-            # Create or get version folder
-            version_id = self.create_version_folder(parent_id, full_name)
+            version_folder_name = self._normalize_version_folder_name(full_name)
+
+            # Create or get version folder, honoring legacy names
+            version_id = self.create_version_folder(
+                parent_id,
+                version_folder_name,
+                alt_version_names=[full_name] if full_name != version_folder_name else None
+            )
             if not version_id:
                 self.log("Failed to create/get version folder", "ERROR", host="gofile")
                 return None
@@ -924,17 +976,28 @@ class DragDropUploader:
             else:
                 self.log(f"Found parent folder: {package}", host="buzzheavier")
 
-            # Check if version folder exists
+            version_folder_name = self._normalize_version_folder_name(full_name)
+            candidate_names = [version_folder_name]
+            if full_name != version_folder_name:
+                candidate_names.append(full_name)
+
+            # Check if version folder exists (prefer normalized, but allow legacy)
             parent_contents = self.buzzheavier_api.get_content(parent_id)
             children = parent_contents.get('children', [])
-            version_folder = next((c for c in children if c.get('name') == full_name and c.get('isDirectory')), None)
+            version_folder = next(
+                (
+                    c for c in children
+                    if c.get('isDirectory') and c.get('name') in candidate_names
+                ),
+                None
+            )
 
             if version_folder:
                 version_id = version_folder.get('id')
-                self.log(f"Version folder already exists: {full_name}", host="buzzheavier")
+                self.log(f"Version folder already exists: {version_folder_name}", host="buzzheavier")
             else:
-                self.log(f"Creating version folder: {full_name}", host="buzzheavier")
-                result = self.buzzheavier_api.create_folder(parent_id, full_name)
+                self.log(f"Creating version folder: {version_folder_name}", host="buzzheavier")
+                result = self.buzzheavier_api.create_folder(parent_id, version_folder_name)
                 version_id = result.get('id')
                 if not version_id:
                     self.log("Failed to create version folder", "ERROR", host="buzzheavier")

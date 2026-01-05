@@ -143,12 +143,12 @@ A window will appear:
 
 ### Folder Organization
 
-**Gofile & Buzzheavier**: The uploader automatically organizes your APKs into a hierarchical structure:
+**Gofile & Buzzheavier**: The uploader automatically organizes your APKs into a hierarchical structure. Trailing `-release` is trimmed from the folder name, but the uploaded APK file name is kept as-is:
 
 ```
 Gofile/Buzzheavier Root/
 ├── com.example.app/
-│   ├── com.example.app-1.0.0-release/
+│   ├── com.example.app-1.0.0/
 │   │   └── com.example.app-1.0.0-release.apk
 │   └── com.example.app-2.0.0-beta/
 │       └── com.example.app-2.0.0-beta.apk
@@ -164,8 +164,10 @@ Both Gofile and Buzzheavier maintain identical folder structures for consistency
 ### File Processing
 
 1. **Parse APK Filename**: Extracts package name and version from filename
-   - Expected format: `com.company.app-1.2.3-suffix.apk`
-   - Example: `com.example.myapp-2.0.1-release.apk`
+   - Expected format: `package-version[-suffix].apk`
+   - Versions can be numeric, alphanumeric, or words (e.g., `prologue`)
+   - Known trailing suffix tokens like `-release`, `-fix`, `-hotfix`, `-patch` are ignored for version parsing
+   - Example: `com.example.myapp-2.0.1-release.apk` → version `2.0.1`; `com.estrada777.inizialization-prologue-release.apk` → version `prologue`
 
 2. **Parallel Upload to Enabled Hosts**:
    - Creates separate threads for simultaneous uploads
@@ -365,9 +367,9 @@ Check your `config.json` file and ensure all API credentials are valid for the h
 
 ### "Could not parse APK filename"
 Ensure your APK follows the naming convention:
-- Format: `package-version-suffix.apk`
+- Format: `package-version[-suffix].apk`
 - Package should have at least 2 dots (e.g., `com.company.app`)
-- Version should start with a number
+- Version can be numeric or text (e.g., `1.2.3`, `ch1`, `prologue`)
 
 ### Drag and drop not working
 - Make sure you're dragging directly onto the "Drop Zone" area
