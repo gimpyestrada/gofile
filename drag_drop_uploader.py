@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import threading
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import pystray
 from gofile_api import GofileAPI, GofileAPIError
 from buzzheavier_api import BuzzheavierAPI, BuzzheavierHTTPError, BuzzheavierAPIError, NetworkException
@@ -139,45 +139,9 @@ class DragDropUploader:
         self.pixeldrain_folder_structure = {}
         self.pixeldrain_ready = False
 
-        # Tray icon
-        self._tray = None
-
-    def _resource_path(self, name: str) -> str:
-        base = getattr(sys, '_MEIPASS', None)
-        if base:
-            return os.path.join(base, name)
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
-
-    def _start_tray_icon(self) -> None:
-        try:
-            image = Image.open(self._resource_path('upload_cloud_file_icon_181534.ico'))
-        except Exception:
-            return
-
-        menu = pystray.Menu(
-            pystray.MenuItem('Show', lambda: self._show_window()),
-            pystray.MenuItem('Exit', lambda: self._exit_app())
-        )
-
-        self._tray = pystray.Icon('GofileUploader', image, 'Gofile Uploader', menu)
-        threading.Thread(target=self._tray.run, daemon=True).start()
-
-    def _show_window(self) -> None:
-        if self.root:
-            self.root.after(0, lambda: (self.root.deiconify(), self.root.lift(), self.root.focus_force()))
-
-    def _exit_app(self) -> None:
-        if self._tray:
-            try:
-                self._tray.stop()
-            except Exception:
-                pass
-        if self.root:
-            self.root.after(0, self.root.quit)
-
         # GUI components
         self.root = None
-        self.log_text = None  # Keep for backward compatibility (maps to gofile_log_text)
+        self.log_text = None  # Backward compatibility alias for gofile_log_text
         self.gofile_log_text = None
         self.buzzheavier_log_text = None
         self.pixeldrain_log_text = None
@@ -185,14 +149,14 @@ class DragDropUploader:
         self.gofile_status_label = None
         self.buzzheavier_status_label = None
         self.pixeldrain_status_label = None
-        self.link_entry = None  # Keep for backward compatibility (maps to gofile_link_entry)
+        self.link_entry = None  # Backward compatibility alias for gofile_link_entry
         self.gofile_link_entry = None
         self.buzzheavier_link_entry = None
         self.pixeldrain_link_entry = None
         self.is_ready = False
         self.mini_mode = None  # Will be set after root window created
 
-        # Store frames for show/hide
+        # Frames and widgets
         self.main_frame = None
         self.drop_frame = None
         self.link_frame = None
@@ -202,33 +166,80 @@ class DragDropUploader:
         self.file_info_frame = None
         self.file_name_label = None
         self.file_size_label = None
-        
-        # Store log column widgets for dynamic visibility
+
+        # Log column widgets
         self.gofile_log_label = None
         self.buzzheavier_log_label = None
         self.pixeldrain_log_label = None
-        
-        # Store button frames for dynamic visibility
+
+        # Button frames
         self.gofile_buttons_frame = None
         self.buzzheavier_buttons_frame = None
         self.pixeldrain_buttons_frame = None
-        
-        # Store status indicator labels (separate from name labels)
+
+        # Status indicators
         self.gofile_status_indicator = None
         self.buzzheavier_status_indicator = None
         self.pixeldrain_status_indicator = None
-        
-        # Store status frames (contain indicator + name)
+
+        # Status frames
         self.gofile_status_frame = None
         self.buzzheavier_status_frame = None
         self.pixeldrain_status_frame = None
-        
-        # Mini mode indicators (initialized in run())
+
+        # Mini mode indicators
         self.mini_gofile_indicator = None
         self.mini_buzzheavier_indicator = None
         self.mini_pixeldrain_indicator = None
-        self.buzzheavier_status_frame = None
-        self.pixeldrain_status_frame = None
+
+        # Tray icon
+        self._tray = None
+
+    def _resource_path(self, name: str) -> str:
+        """Resolve a bundled resource path.
+
+        If running under PyInstaller, use the temporary extraction
+        directory; otherwise resolve relative to this file.
+        """
+        base = getattr(sys, '_MEIPASS', None)
+        if base:
+            return os.path.join(base, name)
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+
+    def _start_tray_icon(self) -> None:
+        """Start the system tray icon with basic menu actions."""
+        try:
+            image = Image.open(self._resource_path('upload_cloud_file_icon_181534.ico'))
+        except (FileNotFoundError, UnidentifiedImageError, OSError):
+            return
+
+        menu = pystray.Menu(
+            pystray.MenuItem('Show', self._show_window),
+            pystray.MenuItem('Exit', self._exit_app)
+        )
+
+        self._tray = pystray.Icon('GofileUploader', image, 'Gofile Uploader', menu)
+        threading.Thread(target=self._tray.run, daemon=True).start()
+
+    def _show_window(self) -> None:
+        """Show and focus the main application window."""
+        if self.root:
+            self.root.after(0, self._bring_to_front)
+
+    def _bring_to_front(self) -> None:
+        """Bring the window to the foreground and focus it."""
+        if not self.root:
+            return
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _exit_app(self) -> None:
+        """Gracefully stop the tray icon and exit the GUI loop."""
+        if self._tray:
+            self._tray.stop()
+        if self.root:
+            self.root.after(0, self.root.quit)
 
     def log(self, message: str, level: str = "INFO", host: str = "both") -> None:
         """
@@ -2060,7 +2071,7 @@ class DragDropUploader:
             # Window icon (Windows)
             try:
                 self.root.iconbitmap(self._resource_path('upload_cloud_file_icon_181534.ico'))
-            except Exception:
+            except tk.TclError:
                 pass
 
             # Create mini mode variable after root window
