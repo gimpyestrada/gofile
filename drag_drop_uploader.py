@@ -17,8 +17,10 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import threading
-from gofile_api import GofileAPI
-from buzzheavier_api import BuzzheavierAPI, BuzzheavierHTTPError, NetworkException
+from PIL import Image
+import pystray
+from gofile_api import GofileAPI, GofileAPIError
+from buzzheavier_api import BuzzheavierAPI, BuzzheavierHTTPError, BuzzheavierAPIError, NetworkException
 from config_loader import load_config
 
 
@@ -136,6 +138,42 @@ class DragDropUploader:
         self.pixeldrain_api = None
         self.pixeldrain_folder_structure = {}
         self.pixeldrain_ready = False
+
+        # Tray icon
+        self._tray = None
+
+    def _resource_path(self, name: str) -> str:
+        base = getattr(sys, '_MEIPASS', None)
+        if base:
+            return os.path.join(base, name)
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+
+    def _start_tray_icon(self) -> None:
+        try:
+            image = Image.open(self._resource_path('upload_cloud_file_icon_181534.ico'))
+        except Exception:
+            return
+
+        menu = pystray.Menu(
+            pystray.MenuItem('Show', lambda: self._show_window()),
+            pystray.MenuItem('Exit', lambda: self._exit_app())
+        )
+
+        self._tray = pystray.Icon('GofileUploader', image, 'Gofile Uploader', menu)
+        threading.Thread(target=self._tray.run, daemon=True).start()
+
+    def _show_window(self) -> None:
+        if self.root:
+            self.root.after(0, lambda: (self.root.deiconify(), self.root.lift(), self.root.focus_force()))
+
+    def _exit_app(self) -> None:
+        if self._tray:
+            try:
+                self._tray.stop()
+            except Exception:
+                pass
+        if self.root:
+            self.root.after(0, self.root.quit)
 
         # GUI components
         self.root = None
@@ -989,6 +1027,116 @@ class DragDropUploader:
             self._update_status_emoji("gofile", "🔴")
             return None
 
+    def _find_existing_version_folder(self, parent_id: str, version_folder_name: str, alt_version_names: Optional[List[str]] = None) -> Optional[str]:
+        """
+        Return version folder ID if it already exists under the parent; do not create.
+
+        Checks both normalized and legacy names when provided.
+        """
+        try:
+            parent_contents = self.api.get_content(parent_id)
+            children = parent_contents.get('children', {})
+
+            candidate_names = [version_folder_name]
+            if alt_version_names:
+                candidate_names.extend(alt_version_names)
+
+            for child_id, child_data in children.items():
+                if child_data.get('type') != 'folder':
+                    continue
+                if child_data.get('name') in candidate_names:
+                    return child_id
+            return None
+        except (RuntimeError, KeyError, ValueError, OSError, IOError):
+            return None
+
+    def _detect_duplicates(self, file_path: str, package: str, full_name: str) -> Dict[str, Dict[str, Optional[str]]]:
+        """
+        Check each enabled host for an already existing file and/or folder.
+
+        Returns a dict per host with keys: {'folder_id', 'file_id'} when found.
+        """
+        filename = os.path.basename(file_path)
+        version_folder_name = self._normalize_version_folder_name(full_name)
+        alt_names = [full_name] if full_name != version_folder_name else None
+
+        results: Dict[str, Dict[str, Optional[str]]] = {}
+
+        # Gofile
+        if self.gofile_enabled and self.gofile_enabled.get() and self.api and self.root_folder_id:
+            folder_id = self.folder_structure.get(package)
+            version_id = None
+            file_id = None
+            if folder_id:
+                version_id = self._find_existing_version_folder(folder_id, version_folder_name, alt_names)
+                if version_id:
+                    try:
+                        contents = self.api.get_content(version_id)
+                        for cid, cdata in contents.get('children', {}).items():
+                            if cdata.get('type') == 'file' and cdata.get('name') == filename:
+                                file_id = cid
+                                break
+                    except (RuntimeError, KeyError, ValueError, OSError, IOError):
+                        pass
+            if version_id or file_id:
+                results['gofile'] = {'folder_id': version_id, 'file_id': file_id}
+
+        # Buzzheavier
+        if self.buzzheavier_enabled and self.buzzheavier_enabled.get() and self.buzzheavier_api and self.buzzheavier_root_folder_id:
+            parent_id = self.buzzheavier_folder_structure.get(package)
+            version_id = None
+            file_id = None
+            try:
+                if parent_id:
+                    parent_contents = self.buzzheavier_api.get_content(parent_id)
+                    children = parent_contents.get('children', [])
+                    # Find existing version folder (normalized or legacy)
+                    candidate_names = [version_folder_name] + ([full_name] if full_name != version_folder_name else [])
+                    version_folder = next((c for c in children if c.get('isDirectory') and c.get('name') in candidate_names), None)
+                    if version_folder:
+                        version_id = version_folder.get('id')
+                        # Check for existing file by name
+                        v_contents = self.buzzheavier_api.get_content(version_id)
+                        v_children = v_contents.get('children', [])
+                        existing_file = next((c for c in v_children if not c.get('isDirectory') and c.get('name') == filename), None)
+                        if existing_file:
+                            file_id = existing_file.get('id')
+                if version_id or file_id:
+                    results['buzzheavier'] = {'folder_id': version_id, 'file_id': file_id}
+            except (RuntimeError, KeyError, ValueError, OSError, IOError):
+                pass
+
+        # Pixeldrain (flat, check by filename in user files)
+        if self.pixeldrain_enabled and self.pixeldrain_enabled.get() and self.pixeldrain_api:
+            try:
+                user_files = self.pixeldrain_api.get_user_files()
+                files = user_files.get('files', [])
+                existing = next((f for f in files if f.get('name') == filename), None)
+                if existing:
+                    results['pixeldrain'] = {'folder_id': None, 'file_id': existing.get('id')}
+            except (RuntimeError, KeyError, ValueError, OSError, IOError):
+                pass
+
+        return results
+
+    def _prompt_duplicate_action(self, hosts: List[str]) -> Optional[str]:
+        """
+        Ask user to choose Overwrite (delete then upload), Upload again, or Cancel.
+        Returns 'overwrite', 'upload', or 'cancel'.
+        """
+        msg = (
+            "Duplicates detected on: " + ", ".join([h.capitalize() for h in hosts]) + "\n\n"
+            "Yes = Overwrite (delete then upload)\n"
+            "No  = Upload a second copy\n"
+            "Cancel = Abort"
+        )
+        choice = messagebox.askyesnocancel("Duplicates Detected", msg)
+        if choice is True:
+            return "overwrite"
+        if choice is False:
+            return "upload"
+        return "cancel"
+
     def _upload_to_buzzheavier(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
         """
         Upload file to Buzzheavier.
@@ -1245,6 +1393,40 @@ class DragDropUploader:
             # Store for retry functionality
             self.last_upload_file_path = file_path
             self.last_upload_parsed_info = parsed
+
+            # Check for duplicates across enabled hosts before starting uploads
+            duplicates = self._detect_duplicates(file_path, package, full_name)
+            if duplicates:
+                action = self._prompt_duplicate_action(list(duplicates.keys()))
+                if action == "cancel":
+                    self.log("Upload cancelled due to duplicates", "WARNING")
+                    self.update_status("Ready - Drop APK file here")
+                    self._update_status_emoji("gofile", "⟳")
+                    self._update_status_emoji("buzzheavier", "⟳")
+                    self._update_status_emoji("pixeldrain", "⟳")
+                    return
+                if action == "overwrite":
+                    # Delete existing files per host where we have file_id
+                    info = duplicates.get('gofile')
+                    if info and info.get('file_id') and self.api:
+                        try:
+                            self.log("Deleting existing Gofile file before overwrite...", host="gofile")
+                            self.api.delete_content(info['file_id'])
+                            self.log("Deleted existing file", "SUCCESS", host="gofile")
+                        except GofileAPIError as e:
+                            self.log(f"Gofile delete failed: {e}", "ERROR", host="gofile")
+                    info = duplicates.get('buzzheavier')
+                    if info and info.get('file_id') and self.buzzheavier_api:
+                        try:
+                            self.log("Deleting existing Buzzheavier file before overwrite...", host="buzzheavier")
+                            self.buzzheavier_api.delete_file(info['file_id'])
+                            self.log("Deleted existing file", "SUCCESS", host="buzzheavier")
+                        except (BuzzheavierAPIError, NetworkException) as e:
+                            self.log(f"Buzzheavier delete failed: {e}", "ERROR", host="buzzheavier")
+                    info = duplicates.get('pixeldrain')
+                    if info and info.get('file_id') and self.pixeldrain_api:
+                        # Pixeldrain delete not implemented in client; proceed with re-upload
+                        self.log("Pixeldrain overwrite not supported by client; uploading new copy", "WARNING", host="pixeldrain")
 
             # Reset status emojis to uploading
             self._update_status_emoji("gofile", "⏳")
@@ -1875,6 +2057,12 @@ class DragDropUploader:
             self.root.title("Gofile Drag & Drop Uploader")
             self.root.geometry(f"{self.NORMAL_MODE_WIDTH}x{self.NORMAL_MODE_HEIGHT}")
 
+            # Window icon (Windows)
+            try:
+                self.root.iconbitmap(self._resource_path('upload_cloud_file_icon_181534.ico'))
+            except Exception:
+                pass
+
             # Create mini mode variable after root window
             self.mini_mode = tk.BooleanVar(value=False)
 
@@ -2260,6 +2448,9 @@ class DragDropUploader:
             init_thread.daemon = True
             init_thread.start()
 
+            # Start system tray icon
+            self._start_tray_icon()
+
             # Run GUI
             self.root.mainloop()
 
@@ -2284,3 +2475,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

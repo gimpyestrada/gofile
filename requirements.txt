@@ -1,2 +1,4 @@
 requests
 tkinterdnd2
+pystray
+Pillow

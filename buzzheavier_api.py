@@ -257,7 +257,7 @@ class BuzzheavierAPI:
                         f"Upload failed after {max_retries} retries. Last error: {error_msg}"
                     ) from e
             
-            except Exception as e:
+            except Exception:
                 # Non-retryable errors (permissions, file not found, API errors, etc.)
                 raise
         
@@ -412,6 +412,20 @@ class BuzzheavierAPI:
         """
         url = f"{self.BASE_API_URL}/fs/{directory_id}"
 
+        response = self.session.delete(url, timeout=self.timeout)
+        return self._handle_response(response)
+
+    def delete_file(self, file_id: str) -> Dict[str, Any]:
+        """
+        Delete a file by ID.
+
+        Args:
+            file_id: ID of the file to delete
+
+        Returns:
+            Dictionary containing deletion confirmation
+        """
+        url = f"{self.BASE_API_URL}/fs/{file_id}"
         response = self.session.delete(url, timeout=self.timeout)
         return self._handle_response(response)
 
