@@ -36,7 +36,7 @@ class Tooltip:
         self.widget.bind("<Enter>", self.showtip, add=True)
         self.widget.bind("<Leave>", self.hidetip, add=True)
     
-    def showtip(self, event=None):
+    def showtip(self, _event=None):
         """Display the tooltip."""
         if self.tipwindow or not self.text:
             return
@@ -52,7 +52,7 @@ class Tooltip:
                         relief=tk.SOLID, borderwidth=1, font=("Arial", 8))
         label.pack(ipadx=5, ipady=2)
     
-    def hidetip(self, event=None):
+    def hidetip(self, _event=None):
         """Hide the tooltip."""
         tw = self.tipwindow
         self.tipwindow = None
@@ -120,6 +120,7 @@ class DragDropUploader:
         self.upload_queue = deque()
         self.queue_processing = False
         self.queue_thread = None
+        self.abort_uploading = False
 
         # Upload tracking for retry functionality
         self.last_upload_file_path = None
@@ -1404,6 +1405,11 @@ class DragDropUploader:
         try:
             while True:
                 with self.queue_lock:
+                    if self.abort_uploading:
+                        self.queue_processing = False
+                        self.log("Upload aborted by user", "WARNING")
+                        self.abort_uploading = False
+                        return
                     if not self.upload_queue:
                         self.queue_processing = False
                         self.log("Upload queue complete", "SUCCESS")
@@ -1418,6 +1424,7 @@ class DragDropUploader:
         finally:
             with self.queue_lock:
                 self.queue_processing = False
+                self.abort_uploading = False
 
     def on_drop(self, event) -> None:
         """Handle file drop event."""
@@ -1678,6 +1685,23 @@ class DragDropUploader:
         if self.file_size_label:
             self.file_size_label.config(text="")
 
+    def on_abort(self) -> None:
+        """Stop any in-progress uploads and clear the pending queue."""
+        with self.queue_lock:
+            self.abort_uploading = True
+            queue_size = len(self.upload_queue)
+            self.upload_queue.clear()
+        
+        if queue_size > 0:
+            self.log(f"Cleared {queue_size} pending file(s) from queue", "WARNING")
+        
+        self.log("Abort requested - stopping uploads", "WARNING")
+        self.update_status("Ready - Drop APK file here")
+        
+        self._update_status_emoji("gofile", "⟳")
+        self._update_status_emoji("buzzheavier", "⟳")
+        self._update_status_emoji("pixeldrain", "⟳")
+
     def open_link(self, host: str = "gofile") -> None:
         """
         Open link in browser.
@@ -1698,7 +1722,6 @@ class DragDropUploader:
             
         link = link_entry.get() if link_entry else ""
         if link:
-            import webbrowser
             webbrowser.open(link)
             self.log(f"Opened {host.capitalize()} link in browser", host=host)
 
@@ -1929,9 +1952,14 @@ class DragDropUploader:
                                    command=self.clear_all, width=8)
             clear_btn.grid(row=0, column=2, sticky=tk.E, padx=(5, 0))
             
+            abort_btn = ttk.Button(link_header_frame, text="Abort", 
+                                   command=self.on_abort, width=8)
+            abort_btn.grid(row=0, column=3, sticky=tk.E, padx=(5, 0))
+            Tooltip(abort_btn, "Stop uploads and clear queue")
+            
             settings_btn = ttk.Button(link_header_frame, text="⚙️", width=3,
                                      command=self.show_settings_menu)
-            settings_btn.grid(row=0, column=3, sticky=tk.E, padx=(5, 0))
+            settings_btn.grid(row=0, column=4, sticky=tk.E, padx=(5, 0))
             Tooltip(settings_btn, "Select Hosts")
             
             self.link_frame = ttk.Frame(self.main_frame, padding="10")
