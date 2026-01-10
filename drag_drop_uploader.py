@@ -1594,8 +1594,13 @@ class DragDropUploader:
     def _process_upload_queue(self) -> None:
         """Drain the upload queue one file at a time."""
         batch_cleared = False
+        total_files = 0
+        processed_files = 0
 
         try:
+            with self.queue_lock:
+                total_files = len(self.upload_queue)
+            
             while True:
                 with self.queue_lock:
                     if self.abort_uploading:
@@ -1613,6 +1618,8 @@ class DragDropUploader:
                     self.root.after(0, self.clear_all)
                     batch_cleared = True
 
+                processed_files += 1
+                self.log(f"Processing file {processed_files} of {total_files}", "INFO")
                 self.upload_file(next_file)
         finally:
             with self.queue_lock:
