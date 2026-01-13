@@ -82,7 +82,7 @@ class DragDropUploader:
 
     # Window dimensions
     NORMAL_MODE_WIDTH = 900
-    NORMAL_MODE_HEIGHT = 650
+    NORMAL_MODE_HEIGHT = 800
     MINI_MODE_WIDTH = 200
     MINI_MODE_HEIGHT = 320
 
@@ -145,6 +145,7 @@ class DragDropUploader:
         self.gofile_log_text = None
         self.buzzheavier_log_text = None
         self.pixeldrain_log_text = None
+        self.general_log_text = None
         self.status_label = None
         self.gofile_status_label = None
         self.buzzheavier_status_label = None
@@ -171,6 +172,7 @@ class DragDropUploader:
         self.gofile_log_label = None
         self.buzzheavier_log_label = None
         self.pixeldrain_log_label = None
+        self.general_log_label = None
 
         # Button frames
         self.gofile_buttons_frame = None
@@ -253,7 +255,7 @@ class DragDropUploader:
             The log level for color coding. Valid values are 'INFO',
             'SUCCESS', 'ERROR', 'WARNING'. Default is 'INFO'.
         host : str, optional
-            Which host log to write to: 'gofile', 'buzzheavier', 'pixeldrain', or 'both'.
+            Which host log to write to: 'gofile', 'buzzheavier', 'pixeldrain', 'general', or 'both'.
             Default is 'both'.
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -296,12 +298,17 @@ class DragDropUploader:
                         log_widget.tag_add("url", start_idx, end_idx)
 
         # Route to appropriate log(s)
-        if host == "gofile" or host == "both":
+        if host == "general":
+            add_to_log(self.general_log_text)
+        elif host == "gofile":
             add_to_log(self.gofile_log_text)
-        if host == "buzzheavier" or host == "both":
+        elif host == "buzzheavier":
             add_to_log(self.buzzheavier_log_text)
-        if host == "pixeldrain":
+        elif host == "pixeldrain":
             add_to_log(self.pixeldrain_log_text)
+        elif host == "both":
+            add_to_log(self.gofile_log_text)
+            add_to_log(self.buzzheavier_log_text)
         
         # Backward compatibility: if old log_text exists and is different from gofile_log_text
         if self.log_text and self.log_text != self.gofile_log_text:
@@ -1040,20 +1047,24 @@ class DragDropUploader:
                     self.root.after(0, lambda: self._update_link_entry(self.gofile_link_entry, link))
                 # Update status to success
                 self._update_status_emoji("gofile", "🟢")
+                self.log("-" * 25, host="gofile")
                 return link
             else:
                 self.log("Could not retrieve public link", "ERROR", host="gofile")
                 self._update_status_emoji("gofile", "🔴")
+                self.log("-" * 25, host="gofile")
                 return None
 
         except (RuntimeError, KeyError) as e:
             self.log(f"Upload failed: {e}", "ERROR", host="gofile")
             self._update_status_emoji("gofile", "🔴")
+            self.log("-" * 25, host="gofile")
             return None
         except (OSError, IOError) as e:
             # File/permission errors that aren't network-related
             self.log(f"Upload failed: {e}", "ERROR", host="gofile")
             self._update_status_emoji("gofile", "🔴")
+            self.log("-" * 25, host="gofile")
             return None
 
     def _find_existing_version_folder(self, parent_id: str, version_folder_name: str, alt_version_names: Optional[List[str]] = None) -> Optional[str]:
@@ -1303,25 +1314,30 @@ class DragDropUploader:
                     self.root.after(0, lambda: self._update_link_entry(self.buzzheavier_link_entry, link))
                 # Update status to success
                 self._update_status_emoji("buzzheavier", "🟢")
+                self.log("-" * 25, host="buzzheavier")
                 return link
             else:
                 self.log("Could not get file ID", "ERROR", host="buzzheavier")
                 self._update_status_emoji("buzzheavier", "🔴")
+                self.log("-" * 25, host="buzzheavier")
                 return None
 
         except NetworkException as e:
             # Network errors after all retries exhausted
             self.log(f"Upload failed after retries: {e}", "ERROR", host="buzzheavier")
             self._update_status_emoji("buzzheavier", "🔴")
+            self.log("-" * 25, host="buzzheavier")
             return None
         except (RuntimeError, KeyError) as e:
             self.log(f"Upload failed: {e}", "ERROR", host="buzzheavier")
             self._update_status_emoji("buzzheavier", "🔴")
+            self.log("-" * 25, host="buzzheavier")
             return None
         except (OSError, IOError) as e:
             # File/permission errors that aren't network-related
             self.log(f"Upload failed: {e}", "ERROR", host="buzzheavier")
             self._update_status_emoji("buzzheavier", "🔴")
+            self.log("-" * 25, host="buzzheavier")
             return None
     
     def _upload_to_pixeldrain(self, file_path: str, _package: str, _version: str, _full_name: str) -> Optional[str]:
@@ -1367,19 +1383,23 @@ class DragDropUploader:
                     self.root.after(0, lambda: self._update_link_entry(self.pixeldrain_link_entry, link))
                 # Update status to success
                 self._update_status_emoji("pixeldrain", "🟢")
+                self.log("-" * 25, host="pixeldrain")
                 return link
             else:
                 self.log("Could not get file ID", "ERROR", host="pixeldrain")
                 self._update_status_emoji("pixeldrain", "🔴")
+                self.log("-" * 25, host="pixeldrain")
                 return None
 
         except NetworkException as e:
             self.log(f"Network error: {e}", "ERROR", host="pixeldrain")
             self._update_status_emoji("pixeldrain", "🔴")
+            self.log("-" * 25, host="pixeldrain")
             return None
         except (OSError, IOError) as e:
             self.log(f"File error: {e}", "ERROR", host="pixeldrain")
             self._update_status_emoji("pixeldrain", "🔴")
+            self.log("-" * 25, host="pixeldrain")
             return None
         except Exception as e:  # pylint: disable=broad-except
             self.log(f"Unexpected error: {e}", "ERROR", host="pixeldrain")
@@ -1419,26 +1439,26 @@ class DragDropUploader:
 
             # Validate file existence
             if not os.path.exists(file_path):
-                self.log(f"File not found: {file_path}", "ERROR")
+                self.log(f"File not found: {file_path}", "ERROR", host="general")
                 self.update_status("Ready - Drop APK file here")
                 return
 
             if not os.path.isfile(file_path):
-                self.log(f"Not a file: {file_path}", "ERROR")
+                self.log(f"Not a file: {file_path}", "ERROR", host="general")
                 self.update_status("Ready - Drop APK file here")
                 return
 
             filename = os.path.basename(file_path)
 
-            self.log("=" * 50)
-            self.log(f"Processing: {filename}", "INFO")
+            self.log("=" * 50, host="general")
+            self.log(f"Processing: {filename}", "INFO", host="general")
 
             # Parse filename
             parsed = self.parse_apk_filename(filename)
 
             if not parsed:
-                self.log("Could not parse APK filename", "ERROR")
-                self.log("Expected format: package-version-suffix.apk", "ERROR")
+                self.log("Could not parse APK filename", "ERROR", host="general")
+                self.log("Expected format: package-version-suffix.apk", "ERROR", host="general")
                 self.update_status("Ready - Drop APK file here")
                 self.last_upload_status = {}
                 return
@@ -1447,8 +1467,8 @@ class DragDropUploader:
             version = parsed['version']
             full_name = parsed['full_name']
 
-            self.log(f"Package: {package}")
-            self.log(f"Version: {version}")
+            self.log(f"Package: {package}", host="general")
+            self.log(f"Version: {version}", host="general")
 
             # Update file info immediately
             self.update_file_info(file_path)
@@ -1466,7 +1486,7 @@ class DragDropUploader:
                 if action == "cancel":
                     # Skip only the hosts with duplicates
                     hosts_to_skip = set(duplicates.keys())
-                    self.log(f"Skipping upload to: {', '.join(hosts_to_skip)}", "WARNING")
+                    self.log(f"Skipping upload to: {', '.join(hosts_to_skip)}", "WARNING", host="general")
                 elif action == "overwrite":
                     # Delete existing files per host where we have file_id
                     info = duplicates.get('gofile')
@@ -1501,33 +1521,53 @@ class DragDropUploader:
             gofile_link = None
             buzzheavier_link = None
             pixeldrain_link = None
+            
+            # Track status for each host: 'success', 'skipped', or 'failed'
+            gofile_state = 'skipped'
+            buzzheavier_state = 'skipped'
+            pixeldrain_state = 'skipped'
 
             def upload_gofile():
-                nonlocal gofile_link
+                nonlocal gofile_link, gofile_state
                 if 'gofile' in hosts_to_skip:
                     self.log("Gofile upload skipped (duplicate detected)", "WARNING", host="gofile")
+                    gofile_state = 'skipped'
+                    self.log("-" * 25, host="gofile")
                 elif self.gofile_enabled and not self.gofile_enabled.get():
                     self.log("Gofile upload skipped (disabled)", "WARNING", host="gofile")
+                    gofile_state = 'skipped'
+                    self.log("-" * 25, host="gofile")
                 elif self.api and self.root_folder_id:
                     gofile_link = self._upload_to_gofile(file_path, package, version, full_name)
+                    gofile_state = 'success' if gofile_link else 'failed'
 
             def upload_buzzheavier():
-                nonlocal buzzheavier_link
+                nonlocal buzzheavier_link, buzzheavier_state
                 if 'buzzheavier' in hosts_to_skip:
                     self.log("Buzzheavier upload skipped (duplicate detected)", "WARNING", host="buzzheavier")
+                    buzzheavier_state = 'skipped'
+                    self.log("-" * 25, host="buzzheavier")
                 elif self.buzzheavier_enabled and not self.buzzheavier_enabled.get():
                     self.log("Buzzheavier upload skipped (disabled)", "WARNING", host="buzzheavier")
+                    buzzheavier_state = 'skipped'
+                    self.log("-" * 25, host="buzzheavier")
                 elif self.buzzheavier_api and self.buzzheavier_root_folder_id:
                     buzzheavier_link = self._upload_to_buzzheavier(file_path, package, version, full_name)
+                    buzzheavier_state = 'success' if buzzheavier_link else 'failed'
             
             def upload_pixeldrain():
-                nonlocal pixeldrain_link
+                nonlocal pixeldrain_link, pixeldrain_state
                 if 'pixeldrain' in hosts_to_skip:
                     self.log("Pixeldrain upload skipped (duplicate detected)", "WARNING", host="pixeldrain")
+                    pixeldrain_state = 'skipped'
+                    self.log("-" * 25, host="pixeldrain")
                 elif self.pixeldrain_enabled and not self.pixeldrain_enabled.get():
                     self.log("Pixeldrain upload skipped (disabled)", "WARNING", host="pixeldrain")
+                    pixeldrain_state = 'skipped'
+                    self.log("-" * 25, host="pixeldrain")
                 elif self.pixeldrain_api:
                     pixeldrain_link = self._upload_to_pixeldrain(file_path, package, version, full_name)
+                    pixeldrain_state = 'success' if pixeldrain_link else 'failed'
 
             # Start parallel uploads
             gofile_thread = threading.Thread(target=upload_gofile)
@@ -1549,11 +1589,21 @@ class DragDropUploader:
                 "pixeldrain": bool(pixeldrain_link) if (self.pixeldrain_enabled and self.pixeldrain_enabled.get()) else None,
             }
 
-            # Log completion summary with emoji status
-            self.log("=" * 50)
-            gofile_emoji = "🟢" if gofile_link else "🔴"
-            buzzheavier_emoji = "🟢" if buzzheavier_link else "🔴"
-            pixeldrain_emoji = "🟢" if pixeldrain_link else "🔴"
+            # Log completion summary with clear status indicators
+            self.log("=" * 50, host="general")
+            
+            # Format status for each host
+            def format_status(state):
+                if state == 'success':
+                    return "✓ SUCCESS"
+                elif state == 'skipped':
+                    return "○ SKIPPED"
+                else:
+                    return "✗ FAILED"
+            
+            gofile_status = format_status(gofile_state)
+            buzzheavier_status = format_status(buzzheavier_state)
+            pixeldrain_status = format_status(pixeldrain_state)
             
             # Count enabled hosts
             enabled_count = sum([
@@ -1563,20 +1613,27 @@ class DragDropUploader:
             ])
             success_count = sum([bool(gofile_link), bool(buzzheavier_link), bool(pixeldrain_link)])
             
-            self.log(f"Gofile: {gofile_emoji} | Buzzheavier: {buzzheavier_emoji} | Pixeldrain: {pixeldrain_emoji}")
+            # Log status with appropriate color coding
+            status_line = f"Gofile: {gofile_status} | Buzzheavier: {buzzheavier_status} | Pixeldrain: {pixeldrain_status}"
+            if success_count == enabled_count:
+                self.log(status_line, "SUCCESS", host="general")
+            elif success_count > 0:
+                self.log(status_line, "WARNING", host="general")
+            else:
+                self.log(status_line, "ERROR", host="general")
             
             if success_count == enabled_count:
-                self.log(f"Upload complete to {success_count} host{'s' if success_count != 1 else ''}!", "SUCCESS")
+                self.log(f"Upload complete to {success_count} host{'s' if success_count != 1 else ''}!", "SUCCESS", host="general")
             elif success_count > 0:
-                self.log(f"Upload complete to {success_count}/{enabled_count} host{'s' if enabled_count != 1 else ''} (check logs)", "WARNING")
+                self.log(f"Upload complete to {success_count}/{enabled_count} host{'s' if enabled_count != 1 else ''} (check logs)", "WARNING", host="general")
             else:
-                self.log(f"Upload failed on all enabled host{'s' if enabled_count != 1 else ''}", "ERROR")
-            self.log("=" * 50)
+                self.log(f"Upload failed on all enabled host{'s' if enabled_count != 1 else ''}", "ERROR", host="general")
+            self.log("=" * 50, host="general")
             
             self.update_status("Ready - Drop APK file here")
 
         except (OSError, IOError, RuntimeError) as e:
-            self.log(f"Upload failed: {e}", "ERROR")
+            self.log(f"Upload failed: {e}", "ERROR", host="general")
             self.update_status("Ready - Drop APK file here")
 
     def browse_file(self) -> None:
@@ -1630,13 +1687,13 @@ class DragDropUploader:
             seen_paths.add(cleaned_path)
 
             if not cleaned_path.lower().endswith('.apk'):
-                self.log(f"Skipping non-APK: {cleaned_path}", "ERROR")
+                self.log(f"Skipping non-APK: {cleaned_path}", "ERROR", host="general")
                 continue
             if not os.path.exists(cleaned_path):
-                self.log(f"Skipping missing file: {cleaned_path}", "ERROR")
+                self.log(f"Skipping missing file: {cleaned_path}", "ERROR", host="general")
                 continue
             if not os.path.isfile(cleaned_path):
-                self.log(f"Skipping path (not a file): {cleaned_path}", "ERROR")
+                self.log(f"Skipping path (not a file): {cleaned_path}", "ERROR", host="general")
                 continue
 
             valid_files.append(cleaned_path)
@@ -1669,12 +1726,12 @@ class DragDropUploader:
                 with self.queue_lock:
                     if self.abort_uploading:
                         self.queue_processing = False
-                        self.log("Upload aborted by user", "WARNING")
+                        self.log("Upload aborted by user", "WARNING", host="general")
                         self.abort_uploading = False
                         return
                     if not self.upload_queue:
                         self.queue_processing = False
-                        self.log("Upload queue complete", "SUCCESS")
+                        self.log("Upload queue complete", "SUCCESS", host="general")
                         return
                     next_file = self.upload_queue.popleft()
 
@@ -1683,7 +1740,7 @@ class DragDropUploader:
                     batch_cleared = True
 
                 processed_files += 1
-                self.log(f"Processing file {processed_files} of {total_files}", "INFO")
+                self.log(f"Processing file {processed_files} of {total_files}", "INFO", host="general")
                 self.upload_file(next_file)
         finally:
             with self.queue_lock:
@@ -2386,6 +2443,7 @@ class DragDropUploader:
             self.log_frame.columnconfigure(1, weight=1)
             self.log_frame.columnconfigure(2, weight=1)
             self.log_frame.rowconfigure(1, weight=1)
+            self.log_frame.rowconfigure(3, weight=1)
 
             # Gofile log column
             self.gofile_log_label = ttk.Label(self.log_frame, text="Gofile", font=('Arial', 9, 'bold'))
@@ -2426,6 +2484,19 @@ class DragDropUploader:
             # Color tags for Pixeldrain log
             self.pixeldrain_log_text.tag_config("success", foreground="green")
             self.pixeldrain_log_text.tag_config("error", foreground="red")
+
+            # General log (bottom row, spanning all columns)
+            self.general_log_label = ttk.Label(self.log_frame, text="General", font=('Arial', 9, 'bold'))
+            self.general_log_label.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(10, 5))
+
+            self.general_log_text = scrolledtext.ScrolledText(self.log_frame, height=8,
+                                                              font=('Consolas', 8),
+                                                              wrap=tk.WORD)
+            self.general_log_text.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+            # Color tags for General log
+            self.general_log_text.tag_config("success", foreground="green")
+            self.general_log_text.tag_config("error", foreground="red")
 
             # ===== MINI FRAME (Mini Mode) =====
             self.mini_frame = ttk.Frame(self.root, padding="10")
