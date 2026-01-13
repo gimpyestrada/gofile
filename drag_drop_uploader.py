@@ -1130,23 +1130,57 @@ class DragDropUploader:
 
         return results
 
-    def _prompt_duplicate_action(self, hosts: List[str]) -> Optional[str]:
+    def _prompt_duplicate_action(self, hosts: List[str], package: str = "") -> Optional[str]:
         """
-        Ask user to choose Overwrite (delete then upload), Upload again, or Cancel.
+        Ask user to choose Overwrite (delete then upload), Upload again, or Skip.
         Returns 'overwrite', 'upload', or 'cancel'.
         """
         msg = (
+            f"Package: {package}\n\n"
             "Duplicates detected on: " + ", ".join([h.capitalize() for h in hosts]) + "\n\n"
-            "Yes = Overwrite (delete then upload)\n"
-            "No  = Upload a second copy\n"
-            "Cancel = Abort"
+            "Overwrite = Delete then upload\n"
+            "Upload Again = Upload a second copy\n"
+            "Skip = Abort"
         )
-        choice = messagebox.askyesnocancel("Duplicates Detected", msg)
-        if choice is True:
-            return "overwrite"
-        if choice is False:
-            return "upload"
-        return "cancel"
+        
+        root = tk.Tk()
+        root.withdraw()
+        
+        result = [None]
+        
+        def on_overwrite():
+            result[0] = "overwrite"
+            dialog.destroy()
+        
+        def on_upload():
+            result[0] = "upload"
+            dialog.destroy()
+        
+        def on_skip():
+            result[0] = "cancel"
+            dialog.destroy()
+        
+        dialog = tk.Toplevel(root)
+        dialog.title("Duplicates Detected")
+        dialog.geometry("400x200")
+        dialog.resizable(False, False)
+        
+        label = tk.Label(dialog, text=msg, justify=tk.LEFT, wraplength=350, padx=20, pady=20)
+        label.pack()
+        
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(pady=10)
+        
+        tk.Button(button_frame, text="Overwrite", command=on_overwrite, width=12).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="Upload Again", command=on_upload, width=12).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="Skip", command=on_skip, width=12).pack(side=tk.LEFT, padx=5)
+        
+        root.after(0, dialog.lift)
+        root.after(0, dialog.focus)
+        root.wait_window(dialog)
+        root.destroy()
+        
+        return result[0]
 
     def _upload_to_buzzheavier(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
         """
@@ -1407,16 +1441,15 @@ class DragDropUploader:
 
             # Check for duplicates across enabled hosts before starting uploads
             duplicates = self._detect_duplicates(file_path, package, full_name)
+            hosts_to_skip = set()
+            
             if duplicates:
-                action = self._prompt_duplicate_action(list(duplicates.keys()))
+                action = self._prompt_duplicate_action(list(duplicates.keys()), package)
                 if action == "cancel":
-                    self.log("Upload cancelled due to duplicates", "WARNING")
-                    self.update_status("Ready - Drop APK file here")
-                    self._update_status_emoji("gofile", "⟳")
-                    self._update_status_emoji("buzzheavier", "⟳")
-                    self._update_status_emoji("pixeldrain", "⟳")
-                    return
-                if action == "overwrite":
+                    # Skip only the hosts with duplicates
+                    hosts_to_skip = set(duplicates.keys())
+                    self.log(f"Skipping upload to: {', '.join(hosts_to_skip)}", "WARNING")
+                elif action == "overwrite":
                     # Delete existing files per host where we have file_id
                     info = duplicates.get('gofile')
                     if info and info.get('file_id') and self.api:
@@ -1453,21 +1486,27 @@ class DragDropUploader:
 
             def upload_gofile():
                 nonlocal gofile_link
-                if self.gofile_enabled and not self.gofile_enabled.get():
+                if 'gofile' in hosts_to_skip:
+                    self.log("Gofile upload skipped (duplicate detected)", "WARNING", host="gofile")
+                elif self.gofile_enabled and not self.gofile_enabled.get():
                     self.log("Gofile upload skipped (disabled)", "WARNING", host="gofile")
                 elif self.api and self.root_folder_id:
                     gofile_link = self._upload_to_gofile(file_path, package, version, full_name)
 
             def upload_buzzheavier():
                 nonlocal buzzheavier_link
-                if self.buzzheavier_enabled and not self.buzzheavier_enabled.get():
+                if 'buzzheavier' in hosts_to_skip:
+                    self.log("Buzzheavier upload skipped (duplicate detected)", "WARNING", host="buzzheavier")
+                elif self.buzzheavier_enabled and not self.buzzheavier_enabled.get():
                     self.log("Buzzheavier upload skipped (disabled)", "WARNING", host="buzzheavier")
                 elif self.buzzheavier_api and self.buzzheavier_root_folder_id:
                     buzzheavier_link = self._upload_to_buzzheavier(file_path, package, version, full_name)
             
             def upload_pixeldrain():
                 nonlocal pixeldrain_link
-                if self.pixeldrain_enabled and not self.pixeldrain_enabled.get():
+                if 'pixeldrain' in hosts_to_skip:
+                    self.log("Pixeldrain upload skipped (duplicate detected)", "WARNING", host="pixeldrain")
+                elif self.pixeldrain_enabled and not self.pixeldrain_enabled.get():
                     self.log("Pixeldrain upload skipped (disabled)", "WARNING", host="pixeldrain")
                 elif self.pixeldrain_api:
                     pixeldrain_link = self._upload_to_pixeldrain(file_path, package, version, full_name)
