@@ -725,7 +725,7 @@ class DragDropUploader:
 
     def create_parent_folder(self, package: str) -> Optional[str]:
         """
-        Create a new parent folder for a package.
+        Create a new parent folder for a package, or return existing folder ID.
 
         Parameters
         ----------
@@ -738,6 +738,24 @@ class DragDropUploader:
             The parent folder ID if successful, None otherwise.
         """
         try:
+            # First check if folder already exists in root
+            self.log(f"Checking for existing parent folder: {package}")
+            root_contents = self.api.get_content(self.root_folder_id)
+            
+            if root_contents and 'children' in root_contents:
+                children = root_contents.get('children', {})
+                
+                # Check if parent folder already exists
+                for child_id, child_data in children.items():
+                    if child_data.get('type') != 'folder':
+                        continue
+                    if child_data.get('name') == package:
+                        self.log(f"Parent folder already exists: {package}")
+                        # Add to structure cache
+                        self.folder_structure[package] = child_id
+                        return child_id
+            
+            # Folder doesn't exist, create it
             self.log(f"Creating parent folder: {package}")
             result = self.api.create_folder(self.root_folder_id, package)
             parent_id = result.get('id')
@@ -1537,15 +1555,22 @@ class DragDropUploader:
             buzzheavier_emoji = "🟢" if buzzheavier_link else "🔴"
             pixeldrain_emoji = "🟢" if pixeldrain_link else "🔴"
             
+            # Count enabled hosts
+            enabled_count = sum([
+                bool(self.gofile_enabled and self.gofile_enabled.get()),
+                bool(self.buzzheavier_enabled and self.buzzheavier_enabled.get()),
+                bool(self.pixeldrain_enabled and self.pixeldrain_enabled.get())
+            ])
             success_count = sum([bool(gofile_link), bool(buzzheavier_link), bool(pixeldrain_link)])
+            
             self.log(f"Gofile: {gofile_emoji} | Buzzheavier: {buzzheavier_emoji} | Pixeldrain: {pixeldrain_emoji}")
             
-            if success_count >= 2:
-                self.log(f"Upload complete to {success_count} hosts!", "SUCCESS")
-            elif success_count == 1:
-                self.log("Upload complete to one host (check logs)", "WARNING")
+            if success_count == enabled_count:
+                self.log(f"Upload complete to {success_count} host{'s' if success_count != 1 else ''}!", "SUCCESS")
+            elif success_count > 0:
+                self.log(f"Upload complete to {success_count}/{enabled_count} host{'s' if enabled_count != 1 else ''} (check logs)", "WARNING")
             else:
-                self.log("Upload failed on both hosts", "ERROR")
+                self.log(f"Upload failed on all enabled host{'s' if enabled_count != 1 else ''}", "ERROR")
             self.log("=" * 50)
             
             self.update_status("Ready - Drop APK file here")
