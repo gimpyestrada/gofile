@@ -2196,9 +2196,20 @@ class DragDropUploader:
             self.root.title("Gofile Drag & Drop Uploader")
             self.root.geometry(f"{self.NORMAL_MODE_WIDTH}x{self.NORMAL_MODE_HEIGHT}")
 
-            # Window icon (Windows)
+            # Set AppUserModelID for consistent taskbar icon (Windows only)
             try:
-                self.root.iconbitmap(self._resource_path('upload_cloud_file_icon_181534.ico'))
+                import ctypes
+                myappid = 'gofileuploader.dragdrop.1.0'
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            except (AttributeError, OSError):
+                pass
+
+            # Window icon (Windows)
+            icon_path = self._resource_path('upload_cloud_file_icon_181534.ico')
+            try:
+                self.root.iconbitmap(icon_path)
+                # Also set as default icon for all windows
+                self.root.iconbitmap(default=icon_path)
             except tk.TclError:
                 pass
 
