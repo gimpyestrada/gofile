@@ -12,6 +12,7 @@ A powerful GUI application that lets you drag and drop APK files to automaticall
 - ⚙️ **Configurable Hosts**: Choose which hosts to upload to via settings menu
 - 📁 **Drag & Drop Interface**: Just drag APK files onto the window
 - 📚 **Multi-File Drop Queue**: Drop multiple APKs at once; uploads run sequentially
+- 🔍 **Batch Duplicate Detection**: Scans all queued files upfront with single decision dialog for unattended uploads
 - 🎯 **Mini Mode**: Compact always-on-top window for keeping on your desktop
 - 🤖 **Intelligent Folder Management**: Automatically organizes files on Gofile and Buzzheavier
 - 🔗 **Multi-Host Public Links**: Get public links from all enabled hosts immediately as they finish
@@ -172,11 +173,17 @@ Both Gofile and Buzzheavier maintain identical folder structures for consistency
    - Example: `com.example.myapp-2.0.1-release.apk` → version `2.0.1`; `com.estrada777.inizialization-prologue-release.apk` → version `prologue`
    - Dropped batches are queued; files upload sequentially while logs accumulate
 
-2. **Parallel Upload to Enabled Hosts**:
+2. **Batch Duplicate Check**: Before uploads begin, scans all queued files for duplicates
+   - Shows progress dialog during scanning
+   - If duplicates found, displays single decision dialog with all affected files
+   - Choose action per file (skip/overwrite/upload_again) or use "Apply to All" buttons
+   - Enables unattended multi-file uploads after making all decisions upfront
+
+3. **Parallel Upload to Enabled Hosts**:
    - Creates separate threads for simultaneous uploads
    - Each host operates independently
 
-3. **For Gofile & Buzzheavier**:
+4. **For Gofile & Buzzheavier**:
    - **Find/Create Parent Folder**: Searches for existing parent folder matching package name
    - **Create Version Folder**: Creates subfolder with full APK name (without .apk)
    - **Upload File**: Uploads APK to version folder with progress tracking
@@ -185,12 +192,12 @@ Both Gofile and Buzzheavier maintain identical folder structures for consistency
      - Buzzheavier: Gets file ID and generates direct link
    - **Update UI**: Link appears immediately when host finishes
 
-4. **For Pixeldrain**:
+5. **For Pixeldrain**:
    - **Upload File**: Uploads APK directly to account root (flat structure)
    - **Generate Public Link**: Creates direct link from file ID
    - **Update UI**: Link appears immediately
 
-5. **Status Updates**:
+6. **Status Updates**:
    - ⟳ orange indicator during upload
    - ✓ green indicator on success
    - ✗ red indicator on failure
@@ -296,6 +303,15 @@ Shows real-time upload performance for each host:
 - **Mbps**: Megabits per second (network speed)
 - Helps you compare host performance
 - Buzzheavier typically faster (80+ Mbps) due to US servers
+
+### Batch Duplicate Detection
+- Scans all queued files before uploads begin
+- Progress dialog shows "Scanning file X/Y" with file names
+- Single decision dialog for all duplicates found across all hosts
+- Three "Apply to All" buttons: Skip All, Overwrite All, Upload All Again
+- Per-file dropdowns for individual control
+- Enables unattended multi-file uploads - decide once for the entire batch
+- Incremental scanning: new files added later are scanned separately
 
 ### Individual Retry Functionality
 - Retry button for each host independently
