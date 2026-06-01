@@ -91,6 +91,30 @@ class Config:
         if not api_key:
             raise ValueError("Pixeldrain API key not found in configuration")
         return api_key
+
+    @property
+    def apkadmin_cf_clearance(self) -> str:
+        """Get the Apkadmin cf_clearance cookie value."""
+        value = self.get('apkadmin_cf_clearance')
+        if not value:
+            raise ValueError("apkadmin_cf_clearance not found in configuration")
+        return value
+
+    @property
+    def apkadmin_xfss(self) -> str:
+        """Get the Apkadmin xfss session cookie value."""
+        value = self.get('apkadmin_xfss')
+        if not value:
+            raise ValueError("apkadmin_xfss not found in configuration")
+        return value
+
+    @property
+    def apkadmin_user_agent(self) -> str:
+        """Get the browser User-Agent string for Apkadmin cookie validation."""
+        value = self.get('apkadmin_user_agent')
+        if not value:
+            raise ValueError("apkadmin_user_agent not found in configuration")
+        return value
     
     def save(self, config_data: Dict[str, str]) -> None:
         """

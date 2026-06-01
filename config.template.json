@@ -8,8 +8,14 @@
   
   "_comment_pixeldrain": "Pixeldrain configuration",
   "pixeldrain_api_key": "YOUR_API_KEY_HERE",
-  
+
+  "_comment_apkadmin": "Apkadmin configuration — see docs/APKADMIN_SETUP.md for how to get these values",
+  "apkadmin_cf_clearance": "YOUR_CF_CLEARANCE_COOKIE",
+  "apkadmin_xfss": "YOUR_XFSS_COOKIE",
+  "apkadmin_user_agent": "YOUR_BROWSER_USER_AGENT",
+
   "gofile_enabled": true,
   "buzzheavier_enabled": true,
-  "pixeldrain_enabled": true
+  "pixeldrain_enabled": true,
+  "apkadmin_enabled": false
 }

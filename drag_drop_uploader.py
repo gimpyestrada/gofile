@@ -21,6 +21,7 @@ from PIL import Image, UnidentifiedImageError
 import pystray
 from gofile_api import GofileAPI, GofileAPIError
 from buzzheavier_api import BuzzheavierAPI, BuzzheavierHTTPError, BuzzheavierAPIError, NetworkException
+from apkadmin_api import ApkadminAPI, ApkadminAPIError, ApkadminAuthError, NetworkException as ApkadminNetworkException
 from config_loader import load_config
 
 
@@ -107,7 +108,10 @@ class DragDropUploader:
         # Pixeldrain API
         self.pixeldrain_api = None
         self.pixeldrain_folder_structure = {}  # package -> list_id
-        
+
+        # Apkadmin API
+        self.apkadmin_api = None
+
         # Cache and config
         self.cache_data = None
         self.config = None
@@ -118,6 +122,7 @@ class DragDropUploader:
         self._gofile_ready = False
         self._buzzheavier_ready = False
         self._pixeldrain_ready = False
+        self._apkadmin_ready = False
         self.queue_lock = threading.Lock()
         self.upload_queue = deque()
         self.queue_processing = False
@@ -125,7 +130,7 @@ class DragDropUploader:
         self.abort_uploading = False
         
         # Duplicate checking state
-        self.duplicate_decisions = {}  # {file_path: {'gofile': action, 'buzzheavier': action, 'pixeldrain': action}}
+        self.duplicate_decisions = {}  # {file_path: {'gofile': action, 'buzzheavier': action, 'pixeldrain': action, 'apkadmin': action}}
         self.scanned_files = set()  # Track which files have been scanned for duplicates
         self.scan_progress_window = None
         self.scan_status_label = None
@@ -143,7 +148,8 @@ class DragDropUploader:
         self.gofile_enabled = None
         self.buzzheavier_enabled = None
         self.pixeldrain_enabled = None
-        
+        self.apkadmin_enabled = None
+
         # Pixeldrain-specific state
         self.pixeldrain_api = None
         self.pixeldrain_folder_structure = {}
@@ -155,15 +161,18 @@ class DragDropUploader:
         self.gofile_log_text = None
         self.buzzheavier_log_text = None
         self.pixeldrain_log_text = None
+        self.apkadmin_log_text = None
         self.general_log_text = None
         self.status_label = None
         self.gofile_status_label = None
         self.buzzheavier_status_label = None
         self.pixeldrain_status_label = None
+        self.apkadmin_status_label = None
         self.link_entry = None  # Backward compatibility alias for gofile_link_entry
         self.gofile_link_entry = None
         self.buzzheavier_link_entry = None
         self.pixeldrain_link_entry = None
+        self.apkadmin_link_entry = None
         self.is_ready = False
         self.mini_mode = None  # Will be set after root window created
 
@@ -182,27 +191,32 @@ class DragDropUploader:
         self.gofile_log_label = None
         self.buzzheavier_log_label = None
         self.pixeldrain_log_label = None
+        self.apkadmin_log_label = None
         self.general_log_label = None
 
         # Button frames
         self.gofile_buttons_frame = None
         self.buzzheavier_buttons_frame = None
         self.pixeldrain_buttons_frame = None
+        self.apkadmin_buttons_frame = None
 
         # Status indicators
         self.gofile_status_indicator = None
         self.buzzheavier_status_indicator = None
         self.pixeldrain_status_indicator = None
+        self.apkadmin_status_indicator = None
 
         # Status frames
         self.gofile_status_frame = None
         self.buzzheavier_status_frame = None
         self.pixeldrain_status_frame = None
+        self.apkadmin_status_frame = None
 
         # Mini mode indicators
         self.mini_gofile_indicator = None
         self.mini_buzzheavier_indicator = None
         self.mini_pixeldrain_indicator = None
+        self.mini_apkadmin_indicator = None
 
         # Tray icon
         self._tray = None
@@ -265,7 +279,7 @@ class DragDropUploader:
             The log level for color coding. Valid values are 'INFO',
             'SUCCESS', 'ERROR', 'WARNING'. Default is 'INFO'.
         host : str, optional
-            Which host log to write to: 'gofile', 'buzzheavier', 'pixeldrain', 'general', or 'both'.
+            Which host log to write to: 'gofile', 'buzzheavier', 'pixeldrain', 'apkadmin', 'general', or 'both'.
             Default is 'both'.
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -316,6 +330,8 @@ class DragDropUploader:
             add_to_log(self.buzzheavier_log_text)
         elif host == "pixeldrain":
             add_to_log(self.pixeldrain_log_text)
+        elif host == "apkadmin":
+            add_to_log(self.apkadmin_log_text)
         elif host == "both":
             add_to_log(self.gofile_log_text)
             add_to_log(self.buzzheavier_log_text)
@@ -351,6 +367,8 @@ class DragDropUploader:
                 self.config.update('gofile_enabled', self.gofile_enabled.get())
                 self.config.update('buzzheavier_enabled', self.buzzheavier_enabled.get())
                 self.config.update('pixeldrain_enabled', self.pixeldrain_enabled.get())
+                if self.apkadmin_enabled:
+                    self.config.update('apkadmin_enabled', self.apkadmin_enabled.get())
                 
                 self.update_visibility()
             except (IOError, OSError) as e:
@@ -370,13 +388,16 @@ class DragDropUploader:
             
             buzzheavier_enabled = self.config.get('buzzheavier_enabled', False)
             pixeldrain_enabled = self.config.get('pixeldrain_enabled', False)
-            
+            apkadmin_enabled = self.config.get('apkadmin_enabled', False)
+
             if self.gofile_enabled:
                 self.gofile_enabled.set(gofile_enabled)
             if self.buzzheavier_enabled:
                 self.buzzheavier_enabled.set(buzzheavier_enabled)
             if self.pixeldrain_enabled:
                 self.pixeldrain_enabled.set(pixeldrain_enabled)
+            if self.apkadmin_enabled:
+                self.apkadmin_enabled.set(apkadmin_enabled)
     
     def show_settings_menu(self) -> None:
         """Show settings menu with host enable/disable checkboxes."""
@@ -397,16 +418,29 @@ class DragDropUploader:
             variable=self.pixeldrain_enabled,
             command=self._validate_and_save_host_settings
         )
+        menu.add_checkbutton(
+            label="Apkadmin",
+            variable=self.apkadmin_enabled,
+            command=self._validate_and_save_host_settings
+        )
         
         # Display menu at mouse position
         try:
             menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
         finally:
             menu.grab_release()
-    
+
+    def open_config_file(self) -> None:
+        """Open config.json in the default system text editor."""
+        config_path = os.path.abspath("config.json")
+        if not os.path.exists(config_path):
+            messagebox.showerror("Not Found", f"config.json not found at:\n{config_path}")
+            return
+        os.startfile(config_path)
+
     def _validate_and_save_host_settings(self) -> None:
         """Validate at least one host is enabled before saving."""
-        if not (self.gofile_enabled.get() or self.buzzheavier_enabled.get() or self.pixeldrain_enabled.get()):
+        if not (self.gofile_enabled.get() or self.buzzheavier_enabled.get() or self.pixeldrain_enabled.get() or (self.apkadmin_enabled and self.apkadmin_enabled.get())):
             messagebox.showwarning(
                 "Invalid Settings",
                 "At least one file host must be enabled."
@@ -431,6 +465,9 @@ class DragDropUploader:
         if self.pixeldrain_enabled.get():
             enabled_hosts.append(('pixeldrain', self.pixeldrain_log_label, self.pixeldrain_log_text,
                                  self.pixeldrain_status_frame, self.pixeldrain_link_entry))
+        if self.apkadmin_enabled and self.apkadmin_enabled.get():
+            enabled_hosts.append(('apkadmin', self.apkadmin_log_label, self.apkadmin_log_text,
+                                 self.apkadmin_status_frame, self.apkadmin_link_entry))
         
         # Hide all log widgets
         if self.gofile_log_label:
@@ -445,6 +482,10 @@ class DragDropUploader:
             self.pixeldrain_log_label.grid_remove()
         if self.pixeldrain_log_text:
             self.pixeldrain_log_text.grid_remove()
+        if self.apkadmin_log_label:
+            self.apkadmin_log_label.grid_remove()
+        if self.apkadmin_log_text:
+            self.apkadmin_log_text.grid_remove()
         
         # Hide all link rows
         if self.gofile_status_frame:
@@ -467,9 +508,16 @@ class DragDropUploader:
             self.pixeldrain_link_entry.grid_remove()
         if self.pixeldrain_buttons_frame:
             self.pixeldrain_buttons_frame.grid_remove()
-        
+
+        if self.apkadmin_status_frame:
+            self.apkadmin_status_frame.grid_remove()
+        if self.apkadmin_link_entry:
+            self.apkadmin_link_entry.grid_remove()
+        if self.apkadmin_buttons_frame:
+            self.apkadmin_buttons_frame.grid_remove()
+
         # Reset column weights
-        for i in range(3):
+        for i in range(4):
             self.log_frame.columnconfigure(i, weight=0)
         
         # Show enabled logs and links with new positions
@@ -487,6 +535,8 @@ class DragDropUploader:
                 self.buzzheavier_buttons_frame.grid(row=row, column=2, pady=(5, 0) if row > 0 else (0, 0))
             elif name == 'pixeldrain' and self.pixeldrain_buttons_frame:
                 self.pixeldrain_buttons_frame.grid(row=row, column=2, pady=(5, 0) if row > 0 else (0, 0))
+            elif name == 'apkadmin' and self.apkadmin_buttons_frame:
+                self.apkadmin_buttons_frame.grid(row=row, column=2, pady=(5, 0) if row > 0 else (0, 0))
         
         # Show enabled logs with new column positions
         for col, (name, label_widget, log_widget, _status_label, link_entry) in enumerate(enabled_hosts):
@@ -959,6 +1009,12 @@ class DragDropUploader:
                 text=indicator, foreground=color))
             if hasattr(self, 'mini_pixeldrain_indicator'):
                 self.root.after(0, lambda: self.mini_pixeldrain_indicator.config(
+                    text=indicator, foreground=color))
+        elif host == "apkadmin" and self.apkadmin_status_indicator:
+            self.root.after(0, lambda: self.apkadmin_status_indicator.config(
+                text=indicator, foreground=color))
+            if hasattr(self, 'mini_apkadmin_indicator'):
+                self.root.after(0, lambda: self.mini_apkadmin_indicator.config(
                     text=indicator, foreground=color))
 
     def _open_url_from_event(self, event):
@@ -1678,6 +1734,78 @@ class DragDropUploader:
             self._update_status_emoji("pixeldrain", "🔴")
             return None
 
+    def _upload_to_apkadmin(self, file_path: str, _package: str, _version: str, _full_name: str) -> Optional[str]:
+        """
+        Upload file to Apkadmin (flat structure, no folder organization).
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the file
+        _package : str
+            Unused — Apkadmin has no folder API
+        _version : str
+            Unused — Apkadmin has no folder API
+        _full_name : str
+            Unused — Apkadmin has no folder API
+
+        Returns
+        -------
+        Optional[str]
+            Public link if successful, None otherwise
+        """
+        try:
+            file_size_bytes = os.path.getsize(file_path)
+            file_size_mb = file_size_bytes / (1024 * 1024)
+            self.log(f"Uploading - {round(file_size_mb)} MB...", host="apkadmin")
+
+            start_time = time.time()
+            result = self.apkadmin_api.upload_file(file_path)
+            upload_time = time.time() - start_time
+
+            upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
+            self.log(f"Upload complete! - {upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps", "SUCCESS", host="apkadmin")
+
+            link = result.get("url")
+            if link:
+                self.log("Public link ready", "SUCCESS", host="apkadmin")
+                self.log(f"Link: {link}", "SUCCESS", host="apkadmin")
+                if self.apkadmin_link_entry:
+                    self.root.after(0, lambda: self._update_link_entry(self.apkadmin_link_entry, link))
+                self._update_status_emoji("apkadmin", "🟢")
+                self.log("-" * 25, host="apkadmin")
+                return link
+            else:
+                self.log("Could not get file URL from response", "ERROR", host="apkadmin")
+                self._update_status_emoji("apkadmin", "🔴")
+                self.log("-" * 25, host="apkadmin")
+                return None
+
+        except ApkadminAuthError as e:
+            self.log(f"Auth error: {e}", "ERROR", host="apkadmin")
+            self._update_status_emoji("apkadmin", "🔴")
+            self.log("-" * 25, host="apkadmin")
+            return None
+        except ApkadminNetworkException as e:
+            self.log(f"Network error: {e}", "ERROR", host="apkadmin")
+            self._update_status_emoji("apkadmin", "🔴")
+            self.log("-" * 25, host="apkadmin")
+            return None
+        except ApkadminAPIError as e:
+            self.log(f"Upload failed: {e}", "ERROR", host="apkadmin")
+            self._update_status_emoji("apkadmin", "🔴")
+            self.log("-" * 25, host="apkadmin")
+            return None
+        except (OSError, IOError) as e:
+            self.log(f"File error: {e}", "ERROR", host="apkadmin")
+            self._update_status_emoji("apkadmin", "🔴")
+            self.log("-" * 25, host="apkadmin")
+            return None
+        except Exception as e:  # pylint: disable=broad-except
+            self.log(f"Unexpected error: {e}", "ERROR", host="apkadmin")
+            self._update_status_emoji("apkadmin", "🔴")
+            return None
+
     def upload_file(self, file_path: str) -> None:
         """
         Upload an APK file to all enabled hosts in parallel.
@@ -1696,8 +1824,9 @@ class DragDropUploader:
             "gofile": None,
             "buzzheavier": None,
             "pixeldrain": None,
+            "apkadmin": None,
         }
-        
+
         # Clear all link entries
         if self.gofile_link_entry:
             self.gofile_link_entry.delete(0, tk.END)
@@ -1705,6 +1834,8 @@ class DragDropUploader:
             self.buzzheavier_link_entry.delete(0, tk.END)
         if self.pixeldrain_link_entry:
             self.pixeldrain_link_entry.delete(0, tk.END)
+        if self.apkadmin_link_entry:
+            self.apkadmin_link_entry.delete(0, tk.END)
 
         try:
             file_path = file_path.strip()
@@ -1793,6 +1924,7 @@ class DragDropUploader:
             self._update_status_emoji("gofile", "⏳")
             self._update_status_emoji("buzzheavier", "⏳")
             self._update_status_emoji("pixeldrain", "⏳")
+            self._update_status_emoji("apkadmin", "⏳")
 
             # Upload to all hosts in parallel
             self.update_status("Uploading to enabled hosts...")
@@ -1800,11 +1932,13 @@ class DragDropUploader:
             gofile_link = None
             buzzheavier_link = None
             pixeldrain_link = None
-            
+            apkadmin_link = None
+
             # Track status for each host: 'success', 'skipped', or 'failed'
             gofile_state = 'skipped'
             buzzheavier_state = 'skipped'
             pixeldrain_state = 'skipped'
+            apkadmin_state = 'skipped'
 
             def upload_gofile():
                 nonlocal gofile_link, gofile_state
@@ -1848,24 +1982,38 @@ class DragDropUploader:
                     pixeldrain_link = self._upload_to_pixeldrain(file_path, package, version, full_name)
                     pixeldrain_state = 'success' if pixeldrain_link else 'failed'
 
+            def upload_apkadmin():
+                nonlocal apkadmin_link, apkadmin_state
+                if self.apkadmin_enabled and not self.apkadmin_enabled.get():
+                    self.log("Apkadmin upload skipped (disabled)", "WARNING", host="apkadmin")
+                    apkadmin_state = 'skipped'
+                    self.log("-" * 25, host="apkadmin")
+                elif self.apkadmin_api:
+                    apkadmin_link = self._upload_to_apkadmin(file_path, package, version, full_name)
+                    apkadmin_state = 'success' if apkadmin_link else 'failed'
+
             # Start parallel uploads
             gofile_thread = threading.Thread(target=upload_gofile)
             buzzheavier_thread = threading.Thread(target=upload_buzzheavier)
             pixeldrain_thread = threading.Thread(target=upload_pixeldrain)
+            apkadmin_thread = threading.Thread(target=upload_apkadmin)
 
             gofile_thread.start()
             buzzheavier_thread.start()
             pixeldrain_thread.start()
+            apkadmin_thread.start()
 
             # Wait for all to complete
             gofile_thread.join()
             buzzheavier_thread.join()
             pixeldrain_thread.join()
+            apkadmin_thread.join()
 
             self.last_upload_status = {
                 "gofile": bool(gofile_link) if (self.gofile_enabled and self.gofile_enabled.get()) else None,
                 "buzzheavier": bool(buzzheavier_link) if (self.buzzheavier_enabled and self.buzzheavier_enabled.get()) else None,
                 "pixeldrain": bool(pixeldrain_link) if (self.pixeldrain_enabled and self.pixeldrain_enabled.get()) else None,
+                "apkadmin": bool(apkadmin_link) if (self.apkadmin_enabled and self.apkadmin_enabled.get()) else None,
             }
 
             # Log completion summary with clear status indicators
@@ -1888,12 +2036,13 @@ class DragDropUploader:
             enabled_count = sum([
                 bool(self.gofile_enabled and self.gofile_enabled.get()),
                 bool(self.buzzheavier_enabled and self.buzzheavier_enabled.get()),
-                bool(self.pixeldrain_enabled and self.pixeldrain_enabled.get())
+                bool(self.pixeldrain_enabled and self.pixeldrain_enabled.get()),
+                bool(self.apkadmin_enabled and self.apkadmin_enabled.get()),
             ])
-            success_count = sum([bool(gofile_link), bool(buzzheavier_link), bool(pixeldrain_link)])
-            
+            success_count = sum([bool(gofile_link), bool(buzzheavier_link), bool(pixeldrain_link), bool(apkadmin_link)])
+
             # Log status with appropriate color coding
-            status_line = f"Gofile: {gofile_status} | Buzzheavier: {buzzheavier_status} | Pixeldrain: {pixeldrain_status}"
+            status_line = f"Gofile: {gofile_status} | Buzzheavier: {buzzheavier_status} | Pixeldrain: {pixeldrain_status} | Apkadmin: {format_status(apkadmin_state)}"
             if success_count == enabled_count:
                 self.log(status_line, "SUCCESS", host="general")
             elif success_count > 0:
@@ -2178,6 +2327,40 @@ class DragDropUploader:
             self.log(f"Unexpected error connecting to Pixeldrain: {e}", "ERROR", host="pixeldrain")
             return False
 
+    def _initialize_apkadmin(self) -> bool:
+        """
+        Initialize Apkadmin session using browser cookies.
+
+        Returns
+        -------
+        bool
+            True if initialization successful, False otherwise
+        """
+        try:
+            self.log("Connecting to Apkadmin...", host="apkadmin")
+
+            self.apkadmin_api = ApkadminAPI(
+                cf_clearance=self.config.apkadmin_cf_clearance,
+                xfss=self.config.apkadmin_xfss,
+                user_agent=self.config.apkadmin_user_agent,
+            )
+            self.apkadmin_api.verify_connection()
+            self.log("Connected to Apkadmin", "SUCCESS", host="apkadmin")
+            return True
+
+        except ApkadminAuthError as e:
+            self.log(f"Auth error: {e}", "ERROR", host="apkadmin")
+            return False
+        except ApkadminNetworkException as e:
+            self.log(f"Network error connecting to Apkadmin: {e}", "ERROR", host="apkadmin")
+            return False
+        except (ValueError, KeyError) as e:
+            self.log(f"Config error for Apkadmin: {e}", "ERROR", host="apkadmin")
+            return False
+        except Exception as e:  # pylint: disable=broad-except
+            self.log(f"Unexpected error connecting to Apkadmin: {e}", "ERROR", host="apkadmin")
+            return False
+
     def initialize_api(self) -> None:
         """Initialize API connections for all hosts in parallel."""
         try:
@@ -2187,19 +2370,23 @@ class DragDropUploader:
             gofile_thread = threading.Thread(target=lambda: setattr(self, '_gofile_ready', self._initialize_gofile()))
             buzzheavier_thread = threading.Thread(target=lambda: setattr(self, '_buzzheavier_ready', self._initialize_buzzheavier()))
             pixeldrain_thread = threading.Thread(target=lambda: setattr(self, '_pixeldrain_ready', self._initialize_pixeldrain()))
+            apkadmin_thread = threading.Thread(target=lambda: setattr(self, '_apkadmin_ready', self._initialize_apkadmin()))
 
             self._gofile_ready = False
             self._buzzheavier_ready = False
             self._pixeldrain_ready = False
+            self._apkadmin_ready = False
 
             gofile_thread.start()
             buzzheavier_thread.start()
             pixeldrain_thread.start()
+            apkadmin_thread.start()
 
             # Wait for all to complete
             gofile_thread.join()
             buzzheavier_thread.join()
             pixeldrain_thread.join()
+            apkadmin_thread.join()
 
             # Build folder structures for successful connections
             self.build_folder_structure()
@@ -2211,7 +2398,7 @@ class DragDropUploader:
                 self.root.after(200, self.update_visibility)
 
             # Set ready if at least one host connected
-            if self._gofile_ready or self._buzzheavier_ready or self._pixeldrain_ready:
+            if self._gofile_ready or self._buzzheavier_ready or self._pixeldrain_ready or self._apkadmin_ready:
                 self.is_ready = True
                 self.update_status("Ready - Drop APK file here")
                 self.log("=" * 50)
@@ -2243,6 +2430,8 @@ class DragDropUploader:
             link_entry = self.buzzheavier_link_entry
         elif host == "pixeldrain":
             link_entry = self.pixeldrain_link_entry
+        elif host == "apkadmin":
+            link_entry = self.apkadmin_link_entry
         else:
             link_entry = None
             
@@ -2299,6 +2488,10 @@ class DragDropUploader:
             link = self.pixeldrain_link_entry.get()
             links.append(link if link else "https://pixeldrain.com")
         
+        if self.apkadmin_enabled and self.apkadmin_enabled.get():
+            link = self.apkadmin_link_entry.get() if self.apkadmin_link_entry else ""
+            links.append(link if link else "https://apkadmin.com")
+        
         if links:
             all_links = "\n".join(links)
             self.root.clipboard_clear()
@@ -2309,6 +2502,8 @@ class DragDropUploader:
                 self.log(f"Copied {len(links)} link(s) to clipboard!", "SUCCESS", host="buzzheavier")
             elif self.pixeldrain_enabled and self.pixeldrain_enabled.get():
                 self.log(f"Copied {len(links)} link(s) to clipboard!", "SUCCESS", host="pixeldrain")
+            elif self.apkadmin_enabled and self.apkadmin_enabled.get():
+                self.log(f"Copied {len(links)} link(s) to clipboard!", "SUCCESS", host="apkadmin")
 
     def clear_all(self) -> None:
         """Clear all public links and reset logs."""
@@ -2318,6 +2513,8 @@ class DragDropUploader:
             self.buzzheavier_link_entry.delete(0, tk.END)
         if self.pixeldrain_link_entry:
             self.pixeldrain_link_entry.delete(0, tk.END)
+        if self.apkadmin_link_entry:
+            self.apkadmin_link_entry.delete(0, tk.END)
         
         if self.gofile_log_text:
             self.gofile_log_text.delete(1.0, tk.END)
@@ -2325,6 +2522,8 @@ class DragDropUploader:
             self.buzzheavier_log_text.delete(1.0, tk.END)
         if self.pixeldrain_log_text:
             self.pixeldrain_log_text.delete(1.0, tk.END)
+        if self.apkadmin_log_text:
+            self.apkadmin_log_text.delete(1.0, tk.END)
         
         if self.log_text and self.log_text != self.gofile_log_text:
             self.log_text.delete(1.0, tk.END)
@@ -2366,9 +2565,11 @@ class DragDropUploader:
             link_entry = self.buzzheavier_link_entry
         elif host == "pixeldrain":
             link_entry = self.pixeldrain_link_entry
+        elif host == "apkadmin":
+            link_entry = self.apkadmin_link_entry
         else:
             link_entry = None
-            
+
         link = link_entry.get() if link_entry else ""
         if link:
             webbrowser.open(link)
@@ -2490,6 +2691,45 @@ class DragDropUploader:
             )
             if not link:
                 self.log("Retry failed", "ERROR", host="pixeldrain")
+
+        thread = threading.Thread(target=retry_thread, daemon=True)
+        thread.start()
+
+    def retry_apkadmin(self) -> None:
+        """Retry upload to Apkadmin for the last uploaded file."""
+        if not self.last_upload_file_path or not self.last_upload_parsed_info:
+            self.log("No previous upload to retry", "WARNING", host="apkadmin")
+            return
+
+        status = self.last_upload_status.get("apkadmin")
+        if status is True:
+            self.log("Last Apkadmin upload succeeded; nothing to retry", "INFO", host="apkadmin")
+            return
+        if status is None:
+            self.log("Apkadmin upload was skipped; nothing to retry", "INFO", host="apkadmin")
+            return
+
+        if not self.apkadmin_api:
+            self.log("Apkadmin not initialized", "ERROR", host="apkadmin")
+            return
+
+        self.log("Retrying Apkadmin upload...", "INFO", host="apkadmin")
+
+        if self.apkadmin_link_entry:
+            self.apkadmin_link_entry.delete(0, tk.END)
+        self._update_status_emoji("apkadmin", "⏳")
+
+        parsed = self.last_upload_parsed_info
+
+        def retry_thread():
+            link = self._upload_to_apkadmin(
+                self.last_upload_file_path,
+                parsed['package'],
+                parsed['version'],
+                parsed['full_name']
+            )
+            if not link:
+                self.log("Retry failed", "ERROR", host="apkadmin")
 
         thread = threading.Thread(target=retry_thread, daemon=True)
         thread.start()
@@ -2627,6 +2867,11 @@ class DragDropUploader:
                                      command=self.show_settings_menu)
             settings_btn.grid(row=0, column=4, sticky=tk.E, padx=(5, 0))
             Tooltip(settings_btn, "Select Hosts")
+
+            config_btn = ttk.Button(link_header_frame, text="📝", width=3,
+                                    command=self.open_config_file)
+            config_btn.grid(row=0, column=5, sticky=tk.E, padx=(5, 0))
+            Tooltip(config_btn, "Open config.json")
             
             self.link_frame = ttk.Frame(self.main_frame, padding="10")
             self.link_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
@@ -2735,7 +2980,42 @@ class DragDropUploader:
                                                command=self.retry_pixeldrain, width=6)
             pixeldrain_retry_btn.grid(row=0, column=2, padx=2)
 
-            # File info frame (file name and size boxes)
+            # Apkadmin row
+            self.apkadmin_enabled = tk.BooleanVar(value=False)
+
+            self.apkadmin_status_frame = ttk.Frame(self.link_frame)
+            self.apkadmin_status_frame.grid(row=3, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0))
+            apkadmin_status_frame = self.apkadmin_status_frame
+
+            self.apkadmin_status_indicator = ttk.Label(apkadmin_status_frame, text="⏳",
+                                                        font=('Arial', 9, 'bold'), foreground="orange")
+            self.apkadmin_status_indicator.grid(row=0, column=0)
+
+            self.apkadmin_status_label = ttk.Label(apkadmin_status_frame, text=" Apkadmin:",
+                                                    font=('Arial', 9, 'bold'))
+            self.apkadmin_status_label.grid(row=0, column=1)
+            Tooltip(self.apkadmin_status_label,
+                    "Scraping-based host. Requires manual cookie refresh from browser. See docs/APKADMIN_SETUP.md")
+
+            self.apkadmin_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
+            self.apkadmin_link_entry.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
+
+            self.apkadmin_buttons_frame = ttk.Frame(self.link_frame)
+            self.apkadmin_buttons_frame.grid(row=3, column=2, pady=(5, 0))
+            apkadmin_buttons = self.apkadmin_buttons_frame
+
+            apkadmin_copy_btn = ttk.Button(apkadmin_buttons, text="Copy",
+                                           command=lambda: self.copy_link("apkadmin"), width=6)
+            apkadmin_copy_btn.grid(row=0, column=0, padx=2)
+
+            apkadmin_open_btn = ttk.Button(apkadmin_buttons, text="Open",
+                                           command=lambda: self.open_link("apkadmin"), width=6)
+            apkadmin_open_btn.grid(row=0, column=1, padx=2)
+
+            apkadmin_retry_btn = ttk.Button(apkadmin_buttons, text="Retry",
+                                            command=self.retry_apkadmin, width=6)
+            apkadmin_retry_btn.grid(row=0, column=2, padx=2)
+
             self.file_info_frame = ttk.Frame(self.main_frame, padding="0")
             self.file_info_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 2))
             self.file_info_frame.columnconfigure(0, weight=1)
@@ -2775,12 +3055,13 @@ class DragDropUploader:
             self.file_size_label.grid(row=1, column=1, sticky=(tk.W, tk.E))
             Tooltip(copy_size_btn, "Copy file size")
 
-            # Log frame (tri-column with dynamic visibility)
+            # Log frame (quad-column with dynamic visibility)
             self.log_frame = ttk.LabelFrame(self.main_frame, text="Activity Logs", padding="10")
             self.log_frame.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
             self.log_frame.columnconfigure(0, weight=1)
             self.log_frame.columnconfigure(1, weight=1)
             self.log_frame.columnconfigure(2, weight=1)
+            self.log_frame.columnconfigure(3, weight=1)
             self.log_frame.rowconfigure(1, weight=1)
             self.log_frame.rowconfigure(3, weight=1)
 
@@ -2824,14 +3105,27 @@ class DragDropUploader:
             self.pixeldrain_log_text.tag_config("success", foreground="green")
             self.pixeldrain_log_text.tag_config("error", foreground="red")
 
+            # Apkadmin log column
+            self.apkadmin_log_label = ttk.Label(self.log_frame, text="Apkadmin", font=('Arial', 9, 'bold'))
+            self.apkadmin_log_label.grid(row=0, column=3, sticky=tk.W, pady=(0, 5))
+
+            self.apkadmin_log_text = scrolledtext.ScrolledText(self.log_frame, height=15,
+                                                               font=('Consolas', 8),
+                                                               wrap=tk.WORD)
+            self.apkadmin_log_text.grid(row=1, column=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+            # Color tags for Apkadmin log
+            self.apkadmin_log_text.tag_config("success", foreground="green")
+            self.apkadmin_log_text.tag_config("error", foreground="red")
+
             # General log (bottom row, spanning all columns)
             self.general_log_label = ttk.Label(self.log_frame, text="General", font=('Arial', 9, 'bold'))
-            self.general_log_label.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(10, 5))
+            self.general_log_label.grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=(10, 5))
 
             self.general_log_text = scrolledtext.ScrolledText(self.log_frame, height=8,
                                                               font=('Consolas', 8),
                                                               wrap=tk.WORD)
-            self.general_log_text.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+            self.general_log_text.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E, tk.N, tk.S))
 
             # Color tags for General log
             self.general_log_text.tag_config("success", foreground="green")
@@ -2926,11 +3220,28 @@ class DragDropUploader:
                                              command=lambda: self.open_link("pixeldrain"), width=8)
             mini_pixeldrain_open.grid(row=0, column=1, padx=2)
 
+            # Apkadmin mini section
+            self.mini_apkadmin_indicator = ttk.Label(mini_links_frame, text="⏳", font=('Arial', 8, 'bold'), foreground="orange")
+            self.mini_apkadmin_indicator.grid(row=6, column=0, sticky=tk.W)
+            mini_apkadmin_name = ttk.Label(mini_links_frame, text=" Apkadmin", font=('Arial', 8, 'bold'))
+            mini_apkadmin_name.grid(row=6, column=0, sticky=tk.W, padx=(15, 0))
+
+            mini_apkadmin_buttons = ttk.Frame(mini_links_frame)
+            mini_apkadmin_buttons.grid(row=7, column=0, pady=(2, 5))
+
+            mini_apkadmin_copy = ttk.Button(mini_apkadmin_buttons, text="Copy",
+                                            command=lambda: self.copy_link("apkadmin"), width=8)
+            mini_apkadmin_copy.grid(row=0, column=0, padx=2)
+
+            mini_apkadmin_open = ttk.Button(mini_apkadmin_buttons, text="Open",
+                                            command=lambda: self.open_link("apkadmin"), width=8)
+            mini_apkadmin_open.grid(row=0, column=1, padx=2)
+
             # Normal mode checkbox
             normal_check = ttk.Checkbutton(mini_links_frame, text="Normal Mode",
                                           variable=self.mini_mode,
                                           command=self.toggle_mini_mode)
-            normal_check.grid(row=6, column=0, pady=(5, 0))
+            normal_check.grid(row=8, column=0, pady=(5, 0))
 
             # Start in normal mode (hide mini frame)
             self.mini_frame.grid_remove()
