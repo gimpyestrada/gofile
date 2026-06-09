@@ -108,11 +108,17 @@ class ApkadminAPI:
         """
         self.timeout = timeout
         self.upload_stall_timeout = upload_stall_timeout
+        self._cf_clearance = cf_clearance
+        self._xfss = xfss
+        self._user_agent = user_agent
+        self._init_session()
 
+    def _init_session(self) -> None:
+        """Create (or recreate) the requests session with the stored credentials."""
         self.session = requests.Session()
-        self.session.cookies.set("cf_clearance", cf_clearance, domain="apkadmin.com")
-        self.session.cookies.set("xfss", xfss, domain="apkadmin.com")
-        self.session.headers.update({"User-Agent": user_agent})
+        self.session.cookies.set("cf_clearance", self._cf_clearance, domain="apkadmin.com")
+        self.session.cookies.set("xfss", self._xfss, domain="apkadmin.com")
+        self.session.headers.update({"User-Agent": self._user_agent})
 
     def _get_upload_form(self) -> tuple[str, Dict[str, str]]:
         """
@@ -293,6 +299,16 @@ class ApkadminAPI:
                 return {"file_code": file_code, "url": url}
 
             except ApkadminAuthError:
+                raise
+            except NetworkException as e:
+                # NetworkException is a subclass of ApkadminAPIError, so it must
+                # be caught first. Stale keep-alive connections cause this after
+                # the window sits idle; reinit the session to drop them.
+                if attempt < UPLOAD_MAX_RETRIES - 1:
+                    self.session.close()
+                    self._init_session()
+                    time.sleep(UPLOAD_RETRY_DELAY * (attempt + 1))
+                    continue
                 raise
             except (ApkadminAPIError, TimeoutError) as e:
                 raise ApkadminAPIError(str(e)) from e
