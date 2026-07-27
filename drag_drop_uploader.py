@@ -82,10 +82,8 @@ class DragDropUploader:
     CACHE_EXPIRY_HOURS = 24
 
     # Window dimensions
-    NORMAL_MODE_WIDTH = 900
-    NORMAL_MODE_HEIGHT = 800
-    MINI_MODE_WIDTH = 200
-    MINI_MODE_HEIGHT = 320
+    WINDOW_WIDTH = 900
+    WINDOW_HEIGHT = 800
 
     # API delays (seconds)
     API_FOLDER_CREATE_DELAY = 2
@@ -174,15 +172,12 @@ class DragDropUploader:
         self.pixeldrain_link_entry = None
         self.apkadmin_link_entry = None
         self.is_ready = False
-        self.mini_mode = None  # Will be set after root window created
 
         # Frames and widgets
         self.main_frame = None
         self.drop_frame = None
         self.link_frame = None
         self.log_frame = None
-        self.mini_frame = None
-        self.mini_status_label = None
         self.file_info_frame = None
         self.file_name_label = None
         self.file_size_label = None
@@ -211,12 +206,6 @@ class DragDropUploader:
         self.buzzheavier_status_frame = None
         self.pixeldrain_status_frame = None
         self.apkadmin_status_frame = None
-
-        # Mini mode indicators
-        self.mini_gofile_indicator = None
-        self.mini_buzzheavier_indicator = None
-        self.mini_pixeldrain_indicator = None
-        self.mini_apkadmin_indicator = None
 
         # Tray icon
         self._tray = None
@@ -353,12 +342,9 @@ class DragDropUploader:
             self._is_ready = value
 
     def update_status(self, message: str) -> None:
-        """Update status label in both normal and mini mode."""
+        """Update the status label."""
         if self.status_label:
             self.status_label.config(text=message)
-        if hasattr(self, 'mini_status_label') and self.mini_status_label:
-            core_status = message.split(' - ')[-1] if ' - ' in message else message
-            self.mini_status_label.config(text=core_status)
 
     def save_host_settings(self) -> None:
         """Save enabled host settings to config.json."""
@@ -995,27 +981,15 @@ class DragDropUploader:
         if host == "gofile" and self.gofile_status_indicator:
             self.root.after(0, lambda: self.gofile_status_indicator.config(
                 text=indicator, foreground=color))
-            if hasattr(self, 'mini_gofile_indicator'):
-                self.root.after(0, lambda: self.mini_gofile_indicator.config(
-                    text=indicator, foreground=color))
         elif host == "buzzheavier" and self.buzzheavier_status_indicator:
             self.root.after(0, lambda: self.buzzheavier_status_indicator.config(
                 text=indicator, foreground=color))
-            if hasattr(self, 'mini_buzzheavier_indicator'):
-                self.root.after(0, lambda: self.mini_buzzheavier_indicator.config(
-                    text=indicator, foreground=color))
         elif host == "pixeldrain" and self.pixeldrain_status_indicator:
             self.root.after(0, lambda: self.pixeldrain_status_indicator.config(
                 text=indicator, foreground=color))
-            if hasattr(self, 'mini_pixeldrain_indicator'):
-                self.root.after(0, lambda: self.mini_pixeldrain_indicator.config(
-                    text=indicator, foreground=color))
         elif host == "apkadmin" and self.apkadmin_status_indicator:
             self.root.after(0, lambda: self.apkadmin_status_indicator.config(
                 text=indicator, foreground=color))
-            if hasattr(self, 'mini_apkadmin_indicator'):
-                self.root.after(0, lambda: self.mini_apkadmin_indicator.config(
-                    text=indicator, foreground=color))
 
     def _open_url_from_event(self, event):
         """Open clicked URL inside a log widget."""
@@ -2739,21 +2713,6 @@ class DragDropUploader:
         widget.drop_target_register(dnd_files_constant)
         widget.dnd_bind('<<Drop>>', self.on_drop)
 
-    def toggle_mini_mode(self) -> None:
-        """Toggle between normal and mini mode."""
-        if self.mini_mode.get():
-            # Switch to mini mode
-            self.main_frame.grid_remove()
-            self.mini_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-            self.root.geometry(f"{self.MINI_MODE_WIDTH}x{self.MINI_MODE_HEIGHT}")
-            self.root.attributes('-topmost', True)
-        else:
-            # Switch to normal mode
-            self.mini_frame.grid_remove()
-            self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-            self.root.geometry(f"{self.NORMAL_MODE_WIDTH}x{self.NORMAL_MODE_HEIGHT}")
-            self.root.attributes('-topmost', False)
-
     def run(self) -> None:
         """Run the application."""
         try:
@@ -2762,7 +2721,7 @@ class DragDropUploader:
             # Recreate root with DnD support
             self.root = TkinterDnD.Tk()
             self.root.title("Gofile Drag & Drop Uploader")
-            self.root.geometry(f"{self.NORMAL_MODE_WIDTH}x{self.NORMAL_MODE_HEIGHT}")
+            self.root.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}")
 
             # Set AppUserModelID for consistent taskbar icon (Windows only)
             try:
@@ -2780,9 +2739,6 @@ class DragDropUploader:
                 self.root.iconbitmap(default=icon_path)
             except tk.TclError:
                 pass
-
-            # Create mini mode variable after root window
-            self.mini_mode = tk.BooleanVar(value=False)
 
             # Style
             style = ttk.Style()
@@ -2824,15 +2780,6 @@ class DragDropUploader:
                 cursor="hand2"
             )
             self.status_label.grid(row=1, column=0)
-
-            # Mini mode checkbox
-            mini_check = ttk.Checkbutton(
-                self.drop_frame,
-                text="Mini Mode (Always on Top)",
-                variable=self.mini_mode,
-                command=self.toggle_mini_mode
-            )
-            mini_check.grid(row=2, column=0, pady=(10, 0))
 
             # Make drop zone clickable
             self.drop_frame.bind("<Button-1>", lambda e: self.browse_file())
@@ -3130,121 +3077,6 @@ class DragDropUploader:
             # Color tags for General log
             self.general_log_text.tag_config("success", foreground="green")
             self.general_log_text.tag_config("error", foreground="red")
-
-            # ===== MINI FRAME (Mini Mode) =====
-            self.mini_frame = ttk.Frame(self.root, padding="10")
-            self.mini_frame.columnconfigure(0, weight=1)
-
-            # Mini drop zone
-            mini_drop_frame = ttk.LabelFrame(self.mini_frame, text="", padding="15")
-            mini_drop_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-            mini_drop_frame.columnconfigure(0, weight=1)
-
-            # Drop APK Here label (centered)
-            drop_here_label = ttk.Label(mini_drop_frame, text="Drop APK Here",
-                                       font=('Arial', 9, 'bold'),
-                                       anchor=tk.CENTER)
-            drop_here_label.grid(row=0, column=0)
-
-            mini_drop_label = ttk.Label(mini_drop_frame, text="📁",
-                                       font=('Arial', 24),
-                                       anchor=tk.CENTER)
-            mini_drop_label.grid(row=1, column=0, pady=5)
-
-            # Mini status
-            self.mini_status_label = ttk.Label(
-                mini_drop_frame,
-                text="Ready",
-                font=('Arial', 8),
-                anchor=tk.CENTER
-            )
-            self.mini_status_label.grid(row=2, column=0)
-
-            # Enable drag and drop on mini frame
-            self.register_drop_target(mini_drop_frame, DND_FILES)
-            self.register_drop_target(mini_drop_label, DND_FILES)
-
-            # Mini link sections (dual-host stacked)
-            mini_links_frame = ttk.Frame(self.mini_frame)
-            mini_links_frame.grid(row=1, column=0, pady=(5, 0), sticky=(tk.W, tk.E))
-            mini_links_frame.columnconfigure(0, weight=1)
-
-            # Gofile mini section
-            self.mini_gofile_indicator = ttk.Label(mini_links_frame, text="✓", font=('Arial', 8, 'bold'), foreground="green")
-            self.mini_gofile_indicator.grid(row=0, column=0, sticky=tk.W)
-            mini_gofile_name = ttk.Label(mini_links_frame, text=" Gofile", font=('Arial', 8, 'bold'))
-            mini_gofile_name.grid(row=0, column=0, sticky=tk.W, padx=(15, 0))
-
-            mini_gofile_buttons = ttk.Frame(mini_links_frame)
-            mini_gofile_buttons.grid(row=1, column=0, pady=(2, 5))
-
-            mini_gofile_copy = ttk.Button(mini_gofile_buttons, text="Copy",
-                                         command=lambda: self.copy_link("gofile"), width=8)
-            mini_gofile_copy.grid(row=0, column=0, padx=2)
-
-            mini_gofile_open = ttk.Button(mini_gofile_buttons, text="Open",
-                                         command=lambda: self.open_link("gofile"), width=8)
-            mini_gofile_open.grid(row=0, column=1, padx=2)
-
-            # Buzzheavier mini section
-            self.mini_buzzheavier_indicator = ttk.Label(mini_links_frame, text="⟳", font=('Arial', 8, 'bold'), foreground="orange")
-            self.mini_buzzheavier_indicator.grid(row=2, column=0, sticky=tk.W)
-            mini_buzzheavier_name = ttk.Label(mini_links_frame, text=" Buzzheavier", font=('Arial', 8, 'bold'))
-            mini_buzzheavier_name.grid(row=2, column=0, sticky=tk.W, padx=(15, 0))
-
-            mini_buzzheavier_buttons = ttk.Frame(mini_links_frame)
-            mini_buzzheavier_buttons.grid(row=3, column=0, pady=(2, 5))
-
-            mini_buzzheavier_copy = ttk.Button(mini_buzzheavier_buttons, text="Copy",
-                                              command=lambda: self.copy_link("buzzheavier"), width=8)
-            mini_buzzheavier_copy.grid(row=0, column=0, padx=2)
-
-            mini_buzzheavier_open = ttk.Button(mini_buzzheavier_buttons, text="Open",
-                                              command=lambda: self.open_link("buzzheavier"), width=8)
-            mini_buzzheavier_open.grid(row=0, column=1, padx=2)
-
-            # Pixeldrain mini section
-            self.mini_pixeldrain_indicator = ttk.Label(mini_links_frame, text="⟳", font=('Arial', 8, 'bold'), foreground="orange")
-            self.mini_pixeldrain_indicator.grid(row=4, column=0, sticky=tk.W)
-            mini_pixeldrain_name = ttk.Label(mini_links_frame, text=" Pixeldrain", font=('Arial', 8, 'bold'))
-            mini_pixeldrain_name.grid(row=4, column=0, sticky=tk.W, padx=(15, 0))
-
-            mini_pixeldrain_buttons = ttk.Frame(mini_links_frame)
-            mini_pixeldrain_buttons.grid(row=5, column=0, pady=(2, 5))
-
-            mini_pixeldrain_copy = ttk.Button(mini_pixeldrain_buttons, text="Copy",
-                                             command=lambda: self.copy_link("pixeldrain"), width=8)
-            mini_pixeldrain_copy.grid(row=0, column=0, padx=2)
-
-            mini_pixeldrain_open = ttk.Button(mini_pixeldrain_buttons, text="Open",
-                                             command=lambda: self.open_link("pixeldrain"), width=8)
-            mini_pixeldrain_open.grid(row=0, column=1, padx=2)
-
-            # Apkadmin mini section
-            self.mini_apkadmin_indicator = ttk.Label(mini_links_frame, text="⏳", font=('Arial', 8, 'bold'), foreground="orange")
-            self.mini_apkadmin_indicator.grid(row=6, column=0, sticky=tk.W)
-            mini_apkadmin_name = ttk.Label(mini_links_frame, text=" Apkadmin", font=('Arial', 8, 'bold'))
-            mini_apkadmin_name.grid(row=6, column=0, sticky=tk.W, padx=(15, 0))
-
-            mini_apkadmin_buttons = ttk.Frame(mini_links_frame)
-            mini_apkadmin_buttons.grid(row=7, column=0, pady=(2, 5))
-
-            mini_apkadmin_copy = ttk.Button(mini_apkadmin_buttons, text="Copy",
-                                            command=lambda: self.copy_link("apkadmin"), width=8)
-            mini_apkadmin_copy.grid(row=0, column=0, padx=2)
-
-            mini_apkadmin_open = ttk.Button(mini_apkadmin_buttons, text="Open",
-                                            command=lambda: self.open_link("apkadmin"), width=8)
-            mini_apkadmin_open.grid(row=0, column=1, padx=2)
-
-            # Normal mode checkbox
-            normal_check = ttk.Checkbutton(mini_links_frame, text="Normal Mode",
-                                          variable=self.mini_mode,
-                                          command=self.toggle_mini_mode)
-            normal_check.grid(row=8, column=0, pady=(5, 0))
-
-            # Start in normal mode (hide mini frame)
-            self.mini_frame.grid_remove()
 
             # Initialize API in separate thread
             init_thread = threading.Thread(target=self.initialize_api)
