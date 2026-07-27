@@ -18,10 +18,12 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 import threading
+import requests
 from PIL import Image, UnidentifiedImageError
 import pystray
 from gofile_api import GofileAPI, GofileAPIError
 from buzzheavier_api import BuzzheavierAPI, BuzzheavierHTTPError, BuzzheavierAPIError, NetworkException
+from pixeldrain_api import PixeldrainAPI, PixeldrainAPIError, NetworkException as PixeldrainNetworkException
 from apkadmin_api import ApkadminAPI, ApkadminAPIError, ApkadminAuthError, NetworkException as ApkadminNetworkException
 from config_loader import load_config
 
@@ -2271,8 +2273,17 @@ class DragDropUploader:
 
             return True
 
+        except GofileAPIError as e:
+            self.log(f"Failed to connect to Gofile: {e}", "ERROR", host="gofile")
+            return False
+        except requests.exceptions.RequestException as e:
+            self.log(f"Network error connecting to Gofile: {e}", "ERROR", host="gofile")
+            return False
         except (RuntimeError, KeyError, ValueError) as e:
             self.log(f"Failed to connect to Gofile: {e}", "ERROR", host="gofile")
+            return False
+        except Exception as e:  # pylint: disable=broad-except
+            self.log(f"Unexpected error connecting to Gofile: {e}", "ERROR", host="gofile")
             return False
 
     def _initialize_buzzheavier(self) -> bool:
@@ -2307,8 +2318,20 @@ class DragDropUploader:
 
             return True
 
+        except NetworkException as e:
+            self.log(f"Network error connecting to Buzzheavier: {e}", "ERROR", host="buzzheavier")
+            return False
+        except BuzzheavierAPIError as e:
+            self.log(f"Failed to connect to Buzzheavier: {e}", "ERROR", host="buzzheavier")
+            return False
+        except requests.exceptions.RequestException as e:
+            self.log(f"Network error connecting to Buzzheavier: {e}", "ERROR", host="buzzheavier")
+            return False
         except (RuntimeError, KeyError, ValueError) as e:
             self.log(f"Failed to connect to Buzzheavier: {e}", "ERROR", host="buzzheavier")
+            return False
+        except Exception as e:  # pylint: disable=broad-except
+            self.log(f"Unexpected error connecting to Buzzheavier: {e}", "ERROR", host="buzzheavier")
             return False
     
     def _initialize_pixeldrain(self) -> bool:
@@ -2322,21 +2345,26 @@ class DragDropUploader:
         """
         try:
             self.log("Connecting to Pixeldrain...", host="pixeldrain")
-            from pixeldrain_api import PixeldrainAPI
-            
+
             self.pixeldrain_api = PixeldrainAPI(api_key=self.config.pixeldrain_api_key)
 
             # Get user files to verify connection
             user_data = self.pixeldrain_api.get_user_files()
-            
+
             file_count = len(user_data.get('files', []))
             self.log("Connected to Pixeldrain account", "SUCCESS", host="pixeldrain")
             self.log(f"Files in account: {file_count}", host="pixeldrain")
 
             return True
 
-        except NetworkException as e:
+        except PixeldrainNetworkException as e:
             self.log(f"Network error connecting to Pixeldrain: {e}", "ERROR", host="pixeldrain")
+            return False
+        except PixeldrainAPIError as e:
+            self.log(f"Failed to connect to Pixeldrain: {e}", "ERROR", host="pixeldrain")
+            return False
+        except (RuntimeError, KeyError, ValueError) as e:
+            self.log(f"Failed to connect to Pixeldrain: {e}", "ERROR", host="pixeldrain")
             return False
         except Exception as e:  # pylint: disable=broad-except
             self.log(f"Unexpected error connecting to Pixeldrain: {e}", "ERROR", host="pixeldrain")
@@ -2368,6 +2396,9 @@ class DragDropUploader:
             return False
         except ApkadminNetworkException as e:
             self.log(f"Network error connecting to Apkadmin: {e}", "ERROR", host="apkadmin")
+            return False
+        except ApkadminAPIError as e:
+            self.log(f"Failed to connect to Apkadmin: {e}", "ERROR", host="apkadmin")
             return False
         except (ValueError, KeyError) as e:
             self.log(f"Config error for Apkadmin: {e}", "ERROR", host="apkadmin")
