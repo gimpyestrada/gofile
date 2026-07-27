@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import json
+import queue
 import time
 import tkinter as tk
 import webbrowser
@@ -15,7 +16,7 @@ from collections import deque
 from tkinter import ttk, scrolledtext, messagebox
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 import threading
 from PIL import Image, UnidentifiedImageError
 import pystray
@@ -89,6 +90,9 @@ class DragDropUploader:
     API_FOLDER_CREATE_DELAY = 2
     API_FOLDER_UPDATE_DELAY = 1
 
+    # How often the main thread drains GUI updates queued by worker threads.
+    GUI_QUEUE_POLL_MS = 50
+
     def __init__(self):
         """Initialize the uploader."""
         # Set cache file path
@@ -115,6 +119,7 @@ class DragDropUploader:
         self.config = None
 
         # Thread safety
+        self._gui_queue = queue.Queue()
         self._ready_lock = threading.Lock()
         self._is_ready = False
         self._gofile_ready = False
@@ -249,6 +254,44 @@ class DragDropUploader:
         self.root.lift()
         self.root.focus_force()
 
+    def _run_on_gui_thread(self, action: Callable[[], None]) -> None:
+        """
+        Run a widget update on the Tk main thread.
+
+        Tkinter is not thread-safe, and uploads, duplicate scans, and host
+        initialization all run on background threads. Updates from those
+        threads go onto a queue that ``_pump_gui_queue`` drains on the main
+        thread.
+
+        Calling ``root.after`` from a worker thread is not an option here:
+        host initialization starts before ``mainloop()`` does, and ``after``
+        raises RuntimeError when the loop is not yet running. Queueing keeps
+        those early messages instead of dropping them.
+        """
+        if threading.current_thread() is threading.main_thread():
+            self._safe_gui_call(action)
+        else:
+            self._gui_queue.put(action)
+
+    @staticmethod
+    def _safe_gui_call(action: Callable[[], None]) -> None:
+        """Run a GUI update, ignoring failures from a torn-down window."""
+        try:
+            action()
+        except tk.TclError:
+            pass
+
+    def _pump_gui_queue(self) -> None:
+        """Drain queued GUI updates. Reschedules itself on the main thread."""
+        try:
+            while True:
+                self._safe_gui_call(self._gui_queue.get_nowait())
+        except queue.Empty:
+            pass
+
+        if self.root:
+            self.root.after(self.GUI_QUEUE_POLL_MS, self._pump_gui_queue)
+
     def _exit_app(self) -> None:
         """Gracefully stop the tray icon and exit the GUI loop."""
         if self._tray:
@@ -276,58 +319,62 @@ class DragDropUploader:
 
         print(message)
 
-        # Helper function to add message to a log widget
-        def add_to_log(log_widget):
-            if log_widget:
-                if "url" not in log_widget.tag_names():
-                    log_widget.tag_config("url", foreground="blue", underline=True)
-                    log_widget.tag_bind("url", "<Button-1>", self._open_url_from_event, add="+")
-                    log_widget.tag_bind("url", "<Enter>", lambda e: e.widget.config(cursor="hand2"), add="+")
-                    log_widget.tag_bind("url", "<Leave>", lambda e: e.widget.config(cursor=""), add="+")
+        widgets = self._log_widgets_for_host(host)
+        if not widgets:
+            return
 
-                log_widget.insert(tk.END, formatted_msg)
-                log_widget.see(tk.END)
+        self._run_on_gui_thread(
+            lambda: [self._append_to_log(w, formatted_msg, level)
+                     for w in widgets]
+        )
 
-                # Color coding
-                if level == "SUCCESS":
-                    line_start = log_widget.index("end-2c linestart")
-                    line_end = log_widget.index("end-1c lineend")
-                    log_widget.tag_add("success", line_start, line_end)
-                elif level == "ERROR":
-                    line_start = log_widget.index("end-2c linestart")
-                    line_end = log_widget.index("end-1c lineend")
-                    log_widget.tag_add("error", line_start, line_end)
+    def _log_widgets_for_host(self, host: str) -> List:
+        """Resolve which log widgets a message should be written to."""
+        routes = {
+            "general": [self.general_log_text],
+            "gofile": [self.gofile_log_text],
+            "buzzheavier": [self.buzzheavier_log_text],
+            "pixeldrain": [self.pixeldrain_log_text],
+            "apkadmin": [self.apkadmin_log_text],
+            "both": [self.gofile_log_text, self.buzzheavier_log_text],
+        }
+        widgets = list(routes.get(host, []))
 
-                link_match = re.search(r"(https?://\S+)", formatted_msg)
-                if link_match:
-                    link_text = link_match.group(1)
-                    line_start = log_widget.index("end-2c linestart")
-                    line_end = log_widget.index("end-1c lineend")
-                    line_text = log_widget.get(line_start, line_end)
-                    pos = line_text.find(link_text)
-                    if pos >= 0:
-                        start_idx = f"{line_start}+{pos}c"
-                        end_idx = f"{start_idx}+{len(link_text)}c"
-                        log_widget.tag_add("url", start_idx, end_idx)
+        # Backward compatibility with the pre-multi-host single log widget.
+        if self.log_text and self.log_text is not self.gofile_log_text:
+            widgets.append(self.log_text)
 
-        # Route to appropriate log(s)
-        if host == "general":
-            add_to_log(self.general_log_text)
-        elif host == "gofile":
-            add_to_log(self.gofile_log_text)
-        elif host == "buzzheavier":
-            add_to_log(self.buzzheavier_log_text)
-        elif host == "pixeldrain":
-            add_to_log(self.pixeldrain_log_text)
-        elif host == "apkadmin":
-            add_to_log(self.apkadmin_log_text)
-        elif host == "both":
-            add_to_log(self.gofile_log_text)
-            add_to_log(self.buzzheavier_log_text)
-        
-        # Backward compatibility: if old log_text exists and is different from gofile_log_text
-        if self.log_text and self.log_text != self.gofile_log_text:
-            add_to_log(self.log_text)
+        return [w for w in widgets if w]
+
+    def _append_to_log(self, log_widget, formatted_msg: str,
+                       level: str) -> None:
+        """Insert one line into a log widget. Must run on the GUI thread."""
+        if "url" not in log_widget.tag_names():
+            log_widget.tag_config("url", foreground="blue", underline=True)
+            log_widget.tag_bind("url", "<Button-1>", self._open_url_from_event, add="+")
+            log_widget.tag_bind("url", "<Enter>", lambda e: e.widget.config(cursor="hand2"), add="+")
+            log_widget.tag_bind("url", "<Leave>", lambda e: e.widget.config(cursor=""), add="+")
+
+        log_widget.insert(tk.END, formatted_msg)
+        log_widget.see(tk.END)
+
+        line_start = log_widget.index("end-2c linestart")
+        line_end = log_widget.index("end-1c lineend")
+
+        if level == "SUCCESS":
+            log_widget.tag_add("success", line_start, line_end)
+        elif level == "ERROR":
+            log_widget.tag_add("error", line_start, line_end)
+
+        link_match = re.search(r"(https?://\S+)", formatted_msg)
+        if link_match:
+            link_text = link_match.group(1)
+            line_text = log_widget.get(line_start, line_end)
+            pos = line_text.find(link_text)
+            if pos >= 0:
+                start_idx = f"{line_start}+{pos}c"
+                end_idx = f"{start_idx}+{len(link_text)}c"
+                log_widget.tag_add("url", start_idx, end_idx)
 
     @property
     def is_ready(self) -> bool:
@@ -342,9 +389,11 @@ class DragDropUploader:
             self._is_ready = value
 
     def update_status(self, message: str) -> None:
-        """Update the status label."""
+        """Update the status label from any thread."""
         if self.status_label:
-            self.status_label.config(text=message)
+            self._run_on_gui_thread(
+                lambda: self.status_label.config(text=message)
+            )
 
     def save_host_settings(self) -> None:
         """Save enabled host settings to config.json."""
@@ -1801,15 +1850,7 @@ class DragDropUploader:
             "apkadmin": None,
         }
 
-        # Clear all link entries
-        if self.gofile_link_entry:
-            self.gofile_link_entry.delete(0, tk.END)
-        if self.buzzheavier_link_entry:
-            self.buzzheavier_link_entry.delete(0, tk.END)
-        if self.pixeldrain_link_entry:
-            self.pixeldrain_link_entry.delete(0, tk.END)
-        if self.apkadmin_link_entry:
-            self.apkadmin_link_entry.delete(0, tk.END)
+        self._clear_link_entries()
 
         try:
             file_path = file_path.strip()
@@ -2380,14 +2421,16 @@ class DragDropUploader:
                 self.log("=" * 50)
             else:
                 self.update_status("Error - Check credentials")
-                messagebox.showerror("Connection Error", 
-                                   "Failed to connect to all file hosts.\n\n"
-                                   "Check your config.json file.")
+                self._run_on_gui_thread(lambda: messagebox.showerror(
+                    "Connection Error",
+                    "Failed to connect to all file hosts.\n\n"
+                    "Check your config.json file."))
 
         except (RuntimeError, KeyError, ValueError, OSError, IOError) as e:
             self.log(f"Initialization error: {e}", "ERROR")
             self.update_status("Error - Check credentials")
-            messagebox.showerror("Connection Error", f"Failed to initialize:\n{e}")
+            self._run_on_gui_thread(lambda: messagebox.showerror(
+                "Connection Error", f"Failed to initialize:\n{e}"))
 
     def copy_link(self, host: str = "gofile") -> None:
         """
@@ -2431,17 +2474,33 @@ class DragDropUploader:
                 self.root.clipboard_clear()
                 self.root.clipboard_append(file_size)
 
+    def _clear_link_entries(self) -> None:
+        """Blank every public-link entry. Safe to call from any thread."""
+        entries = [
+            self.gofile_link_entry,
+            self.buzzheavier_link_entry,
+            self.pixeldrain_link_entry,
+            self.apkadmin_link_entry,
+        ]
+        present = [e for e in entries if e]
+        if present:
+            self._run_on_gui_thread(
+                lambda: [e.delete(0, tk.END) for e in present]
+            )
+
     def update_file_info(self, file_path: str) -> None:
         """Update file info display with current file name and size."""
         if not self.file_name_label or not self.file_size_label:
             return
-        
+
         file_name = os.path.basename(file_path)
         file_size_bytes = os.path.getsize(file_path)
         file_size_mb = round(file_size_bytes / (1024 * 1024))
-        
-        self.file_name_label.config(text=file_name)
-        self.file_size_label.config(text=f"{file_size_mb} MB")
+
+        self._run_on_gui_thread(lambda: (
+            self.file_name_label.config(text=file_name),
+            self.file_size_label.config(text=f"{file_size_mb} MB"),
+        ))
 
     def copy_all_links(self) -> None:
         """
@@ -3077,6 +3136,9 @@ class DragDropUploader:
             # Color tags for General log
             self.general_log_text.tag_config("success", foreground="green")
             self.general_log_text.tag_config("error", foreground="red")
+
+            # Start draining worker-thread GUI updates before any thread runs
+            self.root.after(self.GUI_QUEUE_POLL_MS, self._pump_gui_queue)
 
             # Initialize API in separate thread
             init_thread = threading.Thread(target=self.initialize_api)
