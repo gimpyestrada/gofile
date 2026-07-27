@@ -24,7 +24,7 @@ launch before moving on.
 The app has outgrown this feature. Removing it first means later work (threading fix,
 refactor, progress bars) never has to account for mini widgets.
 
-- [ ] **`refactor: remove mini mode`** — all in `drag_drop_uploader.py` unless noted:
+- [x] **`refactor: remove mini mode`** — all in `drag_drop_uploader.py` unless noted:
   - Constants `MINI_MODE_WIDTH` / `MINI_MODE_HEIGHT`.
   - `__init__` attrs: `mini_mode`, `mini_frame`, `mini_status_label`, and the four
     `mini_*_indicator` attributes.
@@ -40,7 +40,7 @@ refactor, progress bars) never has to account for mini widgets.
 
 ## Phase 1 — Shared module + bug fixes
 
-- [ ] **1.1 `refactor: extract shared ProgressTrackingFile into upload_common.py`**
+- [x] **1.1 `refactor: extract shared ProgressTrackingFile into upload_common.py`**
   - Move the 4 identical `ProgressTrackingFile` classes (from `gofile_api.py`,
     `buzzheavier_api.py`, `pixeldrain_api.py`, `apkadmin_api.py`) into one shared class.
     Add an optional `progress_callback(bytes_read, total_size)` parameter now (used by
@@ -50,14 +50,14 @@ refactor, progress bars) never has to account for mini widgets.
   - Each API client imports from `upload_common`; delete the local copies. Keep each
     client's exception hierarchy where it is (the GUI imports them per-module).
 
-- [ ] **1.2 `fix: use (connect, read) timeouts so uploads cannot hang forever`**
+- [x] **1.2 `fix: use (connect, read) timeouts so uploads cannot hang forever`**
   - Replace `timeout=None` on the upload request in all 4 clients with
     `timeout=(30, self.upload_stall_timeout)`. Currently, once the request body is fully
     sent, nothing can time out and a dead connection hangs the upload thread forever.
   - Keep `ProgressTrackingFile` stall detection as a second layer. The read timeout
     applies between socket operations, so slow-but-alive transfers are unaffected.
 
-- [ ] **1.3 `fix: marshal all GUI updates to the Tk main thread`** (`drag_drop_uploader.py`)
+- [x] **1.3 `fix: marshal all GUI updates to the Tk main thread`** (`drag_drop_uploader.py`)
   - `log()`: `print()` immediately, but marshal all widget work through
     `self.root.after(0, ...)`. Guard for `self.root is None` (early startup) by printing
     only. Callers stay unchanged.
@@ -67,7 +67,7 @@ refactor, progress bars) never has to account for mini widgets.
   - Existing correct uses of `root.after` (link entries, status emojis, scan dialogs)
     stay as-is.
 
-- [ ] **1.4 `fix: surface host init failures in the GUI log`** (`drag_drop_uploader.py`)
+- [x] **1.4 `fix: surface host init failures in the GUI log`** (`drag_drop_uploader.py`)
   - `_initialize_gofile`: also catch `GofileAPIError`, `requests.RequestException`, and a
     broad `Exception` fallback (mirroring `_initialize_pixeldrain`'s structure) so
     failures appear in the GUI instead of killing the init thread with a console-only
@@ -77,7 +77,7 @@ refactor, progress bars) never has to account for mini widgets.
     `buzzheavier_api`, but Pixeldrain raises its own class — import and catch
     `pixeldrain_api.NetworkException`.
 
-- [ ] **1.5 `fix: URL-quote filenames, resolve config path from app dir, repair dead retry logic`**
+- [x] **1.5 `fix: URL-quote filenames, resolve config path from app dir, repair dead retry logic`**
   - **URL-quote filenames**: `urllib.parse.quote(name, safe='')` in `buzzheavier_api.py`
     upload URL construction and `pixeldrain_api.py` (`PUT /file/{name}`). A filename
     containing `#`, `?`, or `%` currently corrupts the URL.
@@ -93,7 +93,7 @@ refactor, progress bars) never has to account for mini widgets.
     path so retries can never happen — retry only transient errors
     (`requests.ConnectionError`, `requests.Timeout`) and re-raise everything else.
 
-- [ ] **1.6 `chore: remove duplicate pixeldrain state and clarify get_content password hashing`**
+- [x] **1.6 `chore: remove duplicate pixeldrain state and clarify get_content password hashing`**
   - `drag_drop_uploader.py` `__init__`: remove the duplicate Pixeldrain state block
     (second init of `pixeldrain_api` / `pixeldrain_folder_structure`, plus
     `self.pixeldrain_ready` which shadows the `_pixeldrain_ready` flag actually used).
@@ -105,12 +105,12 @@ refactor, progress bars) never has to account for mini widgets.
 
 ## Phase 2 — Security hygiene
 
-- [ ] **2.1 `chore: pin dependency versions`**
+- [x] **2.1 `chore: pin dependency versions`**
   - Pin exact versions in `requirements.txt` for all 5 packages using what is currently
     installed in `.venv` (read via `pip freeze`). Matters especially since the app ships
     as a PyInstaller exe.
 
-- [ ] **2.2 `security: tighten logging and restrict clickable log links to known hosts`**
+- [x] **2.2 `security: tighten logging and restrict clickable log links to known hosts`**
   - `_initialize_gofile`: stop logging the account email (log tier only, or mask it).
   - `apkadmin_api.py` `_parse_upload_response`: sanitize the response excerpt embedded in
     the error (strip tags/URLs, keep it short) so hostile server text cannot inject
@@ -127,12 +127,16 @@ refactor, progress bars) never has to account for mini widgets.
 Low-risk mixin/extraction split; `DragDropUploader`'s public surface and behavior are
 unchanged. One commit per extracted module, safest first, smoke-testing between commits.
 
-- [ ] **`refactor: extract apk filename parsing into apk_naming.py`** — pure functions:
+- [x] **`refactor: extract apk filename parsing into apk_naming.py`** — pure functions:
   `parse_apk_filename`, version-folder normalization. No `self` dependencies, so fully
   unit-testable.
-- [ ] **`refactor: extract Tooltip and GUI helpers into widgets.py`**
-- [ ] **`refactor: extract folder cache I/O into folder_cache.py`** — `save_folder_cache`
+- [x] **`refactor: extract Tooltip and GUI helpers into widgets.py`**
+- [x] **`refactor: extract folder cache I/O into folder_cache.py`** — `save_folder_cache`
   / `load_folder_cache` file I/O, parameterized by cache path.
+**Remaining.** The two below are the largest and lowest-risk-to-defer items: pure code
+movement with no behavior change. They were left until after the features, which deliver
+user-visible value, and can be done independently at any time.
+
 - [ ] **`refactor: extract per-host workers into host_workers.py`** — `HostWorkersMixin`
   with the `_initialize_*`, `_upload_to_*`, and `retry_*` methods.
 - [ ] **`refactor: extract duplicate scanning into duplicate_scan.py`** —
@@ -148,7 +152,7 @@ expected).
 
 ## Phase 4 — Features
 
-- [ ] **4.1 `feat: per-host upload progress bars`**
+- [x] **4.1 `feat: per-host upload progress bars`**
   - Each `_upload_to_*` passes a throttled `progress_callback` (report at most ~4×/sec or
     per 1% step) that marshals via `root.after` to a per-host `ttk.Progressbar` under the
     host status frame; hidden/reset when idle.
@@ -160,13 +164,13 @@ expected).
   - Buzzheavier/Pixeldrain stream via `data=file`, so chunked reads already flow through
     `ProgressTrackingFile`.
 
-- [ ] **4.2 `feat: verify Gofile uploads against local MD5`**
+- [x] **4.2 `feat: verify Gofile uploads against local MD5`**
   - Compute the file's MD5 locally in the queue worker (chunked `hashlib.md5`, before
     upload, logged to the general column).
   - Compare against the `md5` field in Gofile's upload response; log SUCCESS on match,
     ERROR on mismatch (keep the link — the user decides). Skip silently if absent.
 
-- [ ] **4.3 `feat: warn on expired Apkadmin cookies with setup guide`**
+- [x] **4.3 `feat: warn on expired Apkadmin cookies with setup guide`**
   - On `ApkadminAuthError` during `_initialize_apkadmin` (startup `verify_connection()`
     already detects expired `cf_clearance`), show a marshaled `messagebox.askyesno`
     explaining the cookies expired, with an option to open the setup guide.
@@ -174,7 +178,7 @@ expected).
     `apkadmin_api.py` and `config.json` but does not exist. Brief steps to grab
     `cf_clearance`, `xfss`, and the User-Agent from browser dev tools.
 
-- [ ] **4.4 `feat: in-app settings dialog`**
+- [x] **4.4 `feat: in-app settings dialog`**
   - New `settings_dialog.py`: a `Toplevel` form with entries for every config key
     (secrets masked with `show='*'` plus a reveal toggle), host-enable checkboxes,
     Save/Cancel.
