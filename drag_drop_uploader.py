@@ -7,7 +7,6 @@ Gofile folder structure, then returns a public link.
 import os
 import re
 import sys
-import json
 import queue
 import time
 import tkinter as tk
@@ -15,8 +14,7 @@ import webbrowser
 from collections import deque
 from urllib.parse import urlparse
 from tkinter import ttk, scrolledtext, messagebox
-from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Callable, Dict, List, Optional
 import threading
 import requests
@@ -29,6 +27,7 @@ from apkadmin_api import ApkadminAPI, ApkadminAPIError, ApkadminAuthError, Netwo
 from config_loader import get_app_dir, get_default_config_path, load_config
 from apk_naming import normalize_version_folder_name, parse_apk_filename
 from widgets import Tooltip
+import folder_cache
 
 
 class DragDropUploader:
@@ -595,69 +594,39 @@ class DragDropUploader:
         folders : Dict
             The folder structure data to cache.
         """
-        cache_path = Path(self.FOLDER_CACHE_FILE)
-        
-        # Load existing cache or create new structure
-        if cache_path.exists():
-            try:
-                with open(cache_path, 'r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
-            except (json.JSONDecodeError, OSError, IOError):
-                cache_data = {}
-        else:
-            cache_data = {}
-        
-        # Update host-specific data
-        cache_data[host] = {
-            'timestamp': datetime.now().isoformat(),
-            'root_folder_id': root_folder_id,
-            'folders': folders
-        }
-        
-        # Save to file
         try:
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, indent=2, ensure_ascii=False)
+            folder_cache.save_host_folders(
+                self.FOLDER_CACHE_FILE, host, root_folder_id, folders
+            )
             self.log(f"Saved {host} cache with {len(folders)} folders", "SUCCESS", host=host)
-        except (OSError, IOError) as e:
+        except folder_cache.FolderCacheError as e:
             self.log(f"Error saving {host} cache: {e}", "ERROR", host=host)
 
     def load_folder_cache(self) -> Optional[Dict]:
         """
         Load cached folder structure.
-        Supports both old single-host and new dual-host formats.
-        Migrates old format to new format automatically.
+
+        Migrates the original single-host format to the multi-host layout.
         """
-        cache_path = Path(self.FOLDER_CACHE_FILE)
-
-        if not cache_path.exists():
-            return None
-
         try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                cache_data = json.load(f)
-
-            # Check if this is old format (has 'timestamp' at root level)
-            if 'timestamp' in cache_data and 'gofile' not in cache_data:
-                self.log("Migrating old cache format to dual-host structure...")
-                # Migrate: wrap old data under 'gofile' key
-                old_data = cache_data.copy()
-                cache_data = {
-                    'gofile': old_data
-                }
-                # Save migrated format
-                try:
-                    with open(cache_path, 'w', encoding='utf-8') as f:
-                        json.dump(cache_data, f, indent=2, ensure_ascii=False)
-                    self.log("Cache migration complete", "SUCCESS")
-                except (OSError, IOError) as e:
-                    self.log(f"Warning: Could not save migrated cache: {e}", "WARNING")
-
-            return cache_data
-
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            self.log(f"Error loading cache: {e}", "ERROR")
+            cache_data = folder_cache.read_cache(self.FOLDER_CACHE_FILE)
+        except folder_cache.FolderCacheError as e:
+            self.log(f"{e}", "ERROR")
             return None
+
+        if cache_data is None:
+            return None
+
+        if folder_cache.needs_migration(cache_data):
+            self.log("Migrating old cache format to multi-host structure...")
+            cache_data = folder_cache.migrate(cache_data)
+            try:
+                folder_cache.write_cache(self.FOLDER_CACHE_FILE, cache_data)
+                self.log("Cache migration complete", "SUCCESS")
+            except folder_cache.FolderCacheError as e:
+                self.log(f"Warning: Could not save migrated cache: {e}", "WARNING")
+
+        return cache_data
 
     def build_folder_structure_for_host(self, host: str, api, root_folder_id: str, folder_structure_dict: Dict) -> None:
         """
@@ -674,34 +643,20 @@ class DragDropUploader:
         folder_structure_dict : Dict
             The dictionary to populate with package -> folder_id mappings.
         """
-        # Check if we have valid cached data for this host
-        if self.cache_data and host in self.cache_data:
-            host_cache = self.cache_data[host]
-            cache_time = datetime.fromisoformat(host_cache.get('timestamp', ''))
-            cache_age = datetime.now() - cache_time
-            
-            # Validate cache
-            if (cache_age <= timedelta(hours=self.CACHE_EXPIRY_HOURS) and
-                host_cache.get('root_folder_id') == root_folder_id):
-                
-                self.log(f"Using cached {host} folder structure", host=host)
-                folders = host_cache.get('folders', {})
-                
-                for folder_id, folder_info in folders.items():
-                    parsed = folder_info.get('parsed', {})
-                    folder_type = parsed.get('type')
-                    
-                    if folder_type == 'parent':
-                        package = parsed.get('package')
-                        if package:
-                            folder_structure_dict[package] = folder_id
-                
-                parent_count = len(folder_structure_dict)
-                self.log(f"Loaded {parent_count} {host} parent folders from cache", "SUCCESS", host=host)
-                return
-        
-        # No valid cache - scan the host
-        self.log(f"No valid {host} cache - scanning folders...", host=host)
+        host_cache, reason = folder_cache.get_valid_host_cache(
+            self.cache_data, host, root_folder_id, self.CACHE_EXPIRY_HOURS
+        )
+
+        if host_cache:
+            self.log(f"Using cached {host} folder structure", host=host)
+            folder_structure_dict.update(
+                folder_cache.extract_parent_folders(host_cache)
+            )
+            parent_count = len(folder_structure_dict)
+            self.log(f"Loaded {parent_count} {host} parent folders from cache", "SUCCESS", host=host)
+            return
+
+        self.log(f"No valid {host} cache ({reason}) - scanning folders...", host=host)
         
         try:
             root_contents = api.get_content(root_folder_id)
