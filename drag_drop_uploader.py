@@ -2283,6 +2283,7 @@ class DragDropUploader:
 
         except ApkadminAuthError as e:
             self.log(f"Auth error: {e}", "ERROR", host="apkadmin")
+            self._warn_apkadmin_cookies_expired()
             return False
         except ApkadminNetworkException as e:
             self.log(f"Network error connecting to Apkadmin: {e}", "ERROR", host="apkadmin")
@@ -2296,6 +2297,38 @@ class DragDropUploader:
         except Exception as e:  # pylint: disable=broad-except
             self.log(f"Unexpected error connecting to Apkadmin: {e}", "ERROR", host="apkadmin")
             return False
+
+    def _warn_apkadmin_cookies_expired(self) -> None:
+        """
+        Offer to open the setup guide when Apkadmin cookies have expired.
+
+        Cloudflare's cf_clearance cookie expires often, so this is the routine
+        failure for this host rather than an exceptional one. Without a prompt
+        the only clue is a line in a log column the user may not be watching.
+        """
+        def prompt():
+            open_guide = messagebox.askyesno(
+                "Apkadmin Cookies Expired",
+                "Apkadmin rejected the saved session.\n\n"
+                "The cf_clearance cookie expires regularly and has to be "
+                "copied from your browser again.\n\n"
+                "Open the setup guide now?",
+            )
+            if open_guide:
+                self._open_setup_guide()
+
+        self._run_on_gui_thread(prompt)
+
+    def _open_setup_guide(self) -> None:
+        """Open the Apkadmin setup guide in the default application."""
+        guide_path = os.path.join(get_app_dir(), "docs", "APKADMIN_SETUP.md")
+        if not os.path.exists(guide_path):
+            messagebox.showerror(
+                "Not Found",
+                f"Setup guide not found at:\n{guide_path}"
+            )
+            return
+        os.startfile(guide_path)
 
     def initialize_api(self) -> None:
         """Initialize API connections for all hosts in parallel."""
