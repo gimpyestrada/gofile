@@ -4,6 +4,7 @@ A GUI application that accepts drag-and-drop APK files and uploads them to the a
 Gofile folder structure, then returns a public link.
 """
 
+import hashlib
 import os
 import re
 import sys
@@ -28,6 +29,10 @@ from config_loader import get_app_dir, get_default_config_path, load_config
 from apk_naming import normalize_version_folder_name, parse_apk_filename
 from widgets import Tooltip
 import folder_cache
+
+
+# Read size for hashing large APKs without loading them into memory.
+MD5_CHUNK_SIZE = 1024 * 1024
 
 
 class DragDropUploader:
@@ -1006,11 +1011,13 @@ class DragDropUploader:
             self.log(f"Uploading - {round(file_size_mb)} MB...", host="gofile")
 
             start_time = time.time()
-            self.api.upload_file(file_path, folder_id=version_id)
+            upload_result = self.api.upload_file(file_path, folder_id=version_id)
             upload_time = time.time() - start_time
 
             upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
             self.log(f"Upload complete! - {upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps", "SUCCESS", host="gofile")
+
+            self._verify_upload_md5(file_path, upload_result)
 
             # Make folder public and get link
             self.log("Making folder public...", host="gofile")
@@ -1047,6 +1054,56 @@ class DragDropUploader:
             self._update_status_emoji("gofile", "🔴")
             self.log("-" * 25, host="gofile")
             return None
+
+    @staticmethod
+    def _compute_md5(file_path: str) -> Optional[str]:
+        """
+        Compute a file's MD5 digest.
+
+        Reads in chunks so a multi-gigabyte APK is not loaded into memory.
+
+        Returns
+        -------
+        Optional[str]
+            Lowercase hex digest, or None if the file could not be read.
+        """
+        digest = hashlib.md5()
+        try:
+            with open(file_path, 'rb') as handle:
+                for chunk in iter(lambda: handle.read(MD5_CHUNK_SIZE), b''):
+                    digest.update(chunk)
+        except OSError:
+            return None
+        return digest.hexdigest()
+
+    def _verify_upload_md5(self, file_path: str, upload_result: Optional[Dict]) -> None:
+        """
+        Compare Gofile's reported MD5 against the local file.
+
+        Catches corruption in transit that a successful HTTP status would not.
+        A mismatch is reported but the link is still published: the user
+        decides whether to re-upload.
+        """
+        if not isinstance(upload_result, dict):
+            return
+
+        remote_md5 = upload_result.get('md5')
+        if not remote_md5:
+            return
+
+        local_md5 = self._compute_md5(file_path)
+        if not local_md5:
+            self.log("Could not read file to verify MD5", "WARNING", host="gofile")
+            return
+
+        if local_md5.lower() == remote_md5.lower():
+            self.log("MD5 verified", "SUCCESS", host="gofile")
+        else:
+            self.log(
+                f"MD5 MISMATCH - file may be corrupted "
+                f"(local {local_md5[:12]}..., remote {remote_md5[:12]}...)",
+                "ERROR", host="gofile"
+            )
 
     def _find_existing_version_folder(self, parent_id: str, version_folder_name: str, alt_version_names: Optional[List[str]] = None) -> Optional[str]:
         """
