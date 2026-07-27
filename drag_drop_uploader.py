@@ -28,6 +28,7 @@ from apkadmin_api import ApkadminAPI, ApkadminAPIError, ApkadminAuthError, Netwo
 from config_loader import get_app_dir, get_default_config_path, load_config
 from apk_naming import normalize_version_folder_name, parse_apk_filename
 from widgets import Tooltip
+from settings_dialog import SettingsDialog
 import folder_cache
 
 
@@ -463,12 +464,40 @@ class DragDropUploader:
             variable=self.apkadmin_enabled,
             command=self._validate_and_save_host_settings
         )
-        
+
+        menu.add_separator()
+        menu.add_command(label="Credentials…", command=self.open_settings_dialog)
+
         # Display menu at mouse position
         try:
             menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
         finally:
             menu.grab_release()
+
+    def open_settings_dialog(self) -> None:
+        """Open the credential editor and offer to reconnect after saving."""
+        if not self.config:
+            self.config = load_config()
+
+        SettingsDialog(self.root, self.config, on_saved=self._on_settings_saved)
+
+    def _on_settings_saved(self) -> None:
+        """Refresh host toggles and offer to reconnect with the new values."""
+        self.load_host_settings()
+        self.update_visibility()
+
+        reconnect = messagebox.askyesno(
+            "Settings Saved",
+            "Credentials saved.\n\nReconnect to the file hosts now?",
+        )
+        if not reconnect:
+            return
+
+        # Drop the cached config so initialize_api re-reads the new values.
+        self.config = None
+        self.is_ready = False
+        self.update_status("Reconnecting...")
+        threading.Thread(target=self.initialize_api, daemon=True).start()
 
     def open_config_file(self) -> None:
         """Open config.json in the default system text editor."""
