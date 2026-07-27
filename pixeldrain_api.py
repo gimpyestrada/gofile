@@ -7,6 +7,7 @@ Supports file uploads and list management.
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any
+from urllib.parse import quote
 
 import requests
 
@@ -137,8 +138,10 @@ class PixeldrainAPI:
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
         
-        # Use PUT /file/{name} as recommended in documentation
-        url = f"{self.BASE_API_URL}/file/{file_path.name}"
+        # Use PUT /file/{name} as recommended in documentation.
+        # Percent-encode the name: '#', '?', and '%' in a filename would
+        # otherwise truncate the path or corrupt the query string.
+        url = f"{self.BASE_API_URL}/file/{quote(file_path.name, safe='')}"
         
         with open(file_path, 'rb') as f:
             tracked_file = ProgressTrackingFile(f, self.upload_stall_timeout)

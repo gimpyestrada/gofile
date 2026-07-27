@@ -7,6 +7,7 @@ Supports file uploads, folder management, and content operations.
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any
+from urllib.parse import quote
 
 import requests
 
@@ -133,12 +134,12 @@ class BuzzheavierAPI:
 
     def _make_request_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs):
         """
-        Make an API request with automatic retry on rate limit (429).
+        Make an API request, retrying on rate limits and transient failures.
 
         Args:
             method: HTTP method ('get', 'post', 'put', 'delete', 'patch')
             url: Request URL
-            max_retries: Maximum number of retries for 429 errors
+            max_retries: Maximum number of retries
             **kwargs: Additional arguments to pass to requests
 
         Returns:
@@ -154,12 +155,15 @@ class BuzzheavierAPI:
 
                 return self._handle_response(response)
 
-            except RateLimitException:
-                raise
-            except Exception:
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                # Only transient network faults are worth reissuing; an auth
+                # failure or a malformed request will fail identically.
                 if attempt == max_retries:
-                    raise
-                raise
+                    raise NetworkException(
+                        f"Request failed after {max_retries} retries: {e}"
+                    ) from e
+                time.sleep((2 ** attempt) * BACKOFF_BASE_SECONDS)
 
         raise RateLimitException("Max retries exceeded")
 
@@ -191,11 +195,14 @@ class BuzzheavierAPI:
         # Use specified location or fall back to preferred location
         upload_location = location_id or self.preferred_location
 
-        # Build upload URL with location parameter
+        # Percent-encode the name: '#', '?', and '%' in a filename would
+        # otherwise truncate the path or corrupt the query string.
+        encoded_name = quote(file_path_obj.name, safe='')
+
         if parent_id:
-            url = f"{self.BASE_UPLOAD_URL}/{parent_id}/{file_path_obj.name}?locationId={upload_location}"
+            url = f"{self.BASE_UPLOAD_URL}/{parent_id}/{encoded_name}?locationId={upload_location}"
         else:
-            url = f"{self.BASE_UPLOAD_URL}/{file_path_obj.name}?locationId={upload_location}"
+            url = f"{self.BASE_UPLOAD_URL}/{encoded_name}?locationId={upload_location}"
 
         # Retry loop for transient network errors
         last_exception = None

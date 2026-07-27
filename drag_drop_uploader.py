@@ -25,7 +25,7 @@ from gofile_api import GofileAPI, GofileAPIError
 from buzzheavier_api import BuzzheavierAPI, BuzzheavierHTTPError, BuzzheavierAPIError, NetworkException
 from pixeldrain_api import PixeldrainAPI, PixeldrainAPIError, NetworkException as PixeldrainNetworkException
 from apkadmin_api import ApkadminAPI, ApkadminAPIError, ApkadminAuthError, NetworkException as ApkadminNetworkException
-from config_loader import load_config
+from config_loader import get_app_dir, get_default_config_path, load_config
 
 
 class Tooltip:
@@ -69,19 +69,6 @@ class Tooltip:
 class DragDropUploader:
     """Drag and drop uploader with GUI."""
 
-    # Cache file path - use user's local appdata for persistence
-    @staticmethod
-    def _get_cache_dir():
-        """Get the cache directory path that works for both script and executable."""
-        # Try to get executable directory first (for PyInstaller)
-        if getattr(sys, 'frozen', False):
-            # Running as compiled executable
-            app_dir = os.path.dirname(sys.executable)
-        else:
-            # Running as script
-            app_dir = os.path.dirname(os.path.abspath(__file__))
-        return app_dir
-    
     CACHE_EXPIRY_HOURS = 24
 
     # Window dimensions
@@ -98,7 +85,7 @@ class DragDropUploader:
     def __init__(self):
         """Initialize the uploader."""
         # Set cache file path
-        self.FOLDER_CACHE_FILE = os.path.join(self._get_cache_dir(), "folder_structure_cache.json")
+        self.FOLDER_CACHE_FILE = os.path.join(get_app_dir(), "folder_structure_cache.json")
         # Gofile API
         self.api = None
         self.root_folder_id = None
@@ -469,7 +456,7 @@ class DragDropUploader:
 
     def open_config_file(self) -> None:
         """Open config.json in the default system text editor."""
-        config_path = os.path.abspath("config.json")
+        config_path = get_default_config_path()
         if not os.path.exists(config_path):
             messagebox.showerror("Not Found", f"config.json not found at:\n{config_path}")
             return

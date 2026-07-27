@@ -5,20 +5,47 @@ Handles loading API token and account ID from config file
 
 import json
 import os
+import sys
 from typing import Dict, Optional
+
+
+def get_app_dir() -> str:
+    """
+    Get the directory the application lives in.
+
+    Returns:
+        The executable's directory when frozen by PyInstaller, otherwise the
+        directory holding this source file.
+    """
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_default_config_path() -> str:
+    """
+    Get the default config.json path.
+
+    Returns:
+        Path to config.json beside the application. Resolved from the app
+        directory rather than the working directory so launching from a
+        shortcut with a different "Start in" folder still finds the config.
+    """
+    return os.path.join(get_app_dir(), "config.json")
 
 
 class Config:
     """Configuration manager for Gofile API credentials."""
-    
-    def __init__(self, config_file: str = "config.json"):
+
+    def __init__(self, config_file: Optional[str] = None):
         """
         Initialize configuration manager.
-        
+
         Args:
-            config_file: Path to the configuration file (default: config.json)
+            config_file: Path to the configuration file. Defaults to
+                config.json beside the application.
         """
-        self.config_file = config_file
+        self.config_file = config_file or get_default_config_path()
         self._config = None
     
     def load(self) -> Dict[str, str]:
@@ -141,13 +168,14 @@ class Config:
         self.save(cfg)
 
 
-def load_config(config_file: str = "config.json") -> Config:
+def load_config(config_file: Optional[str] = None) -> Config:
     """
     Load configuration from file.
-    
+
     Args:
-        config_file: Path to configuration file
-    
+        config_file: Path to configuration file. Defaults to config.json
+            beside the application.
+
     Returns:
         Config object
     """

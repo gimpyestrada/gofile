@@ -73,13 +73,13 @@ class GofileAPI:
                 'Authorization': f'Bearer {api_token}'
             })
 
-    def _handle_response(self, response: requests.Response, retry_count: int = 0, max_retries: int = 3) -> Dict[str, Any]:
+    def _handle_response(self, response: requests.Response) -> Dict[str, Any]:
         """
         Handle API response and extract data.
 
-        Implements exponential backoff for rate limiting (429 errors).
-        Per Gofile support: "We send HTTP 429 when you exceed the limit.
-        Use this as a signal to slow down."
+        Rate limits are signalled by raising RateLimitException; backoff is
+        owned by _make_request_with_retry, which is the only layer that can
+        actually reissue the request.
         """
         try:
             response.raise_for_status()
@@ -90,22 +90,12 @@ class GofileAPI:
             raise GofileResponseError(f"API Error: {data}")
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
-                # Rate limit hit - use exponential backoff
-                if retry_count < max_retries:
-                    wait_time = (2 ** retry_count) * 5  # 5, 10, 20 seconds
-                    print(f"⚠ Rate limit (429) - Waiting {wait_time}s before retry {retry_count + 1}/{max_retries}...")
-                    time.sleep(wait_time)
-                    # Note: Caller needs to retry the actual request
-                    raise RateLimitException(f"Rate limit exceeded. Waited {wait_time}s. Retry attempt {retry_count + 1}/{max_retries}")
-
-                raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes before trying again.")
-            raise GofileHTTPError(f"HTTP Error: {e}")
-        except RateLimitException:
-            raise
+                raise RateLimitException(f"Rate limit exceeded: {e}") from e
+            raise GofileHTTPError(f"HTTP Error: {e}") from e
         except GofileAPIError:
             raise
         except Exception as e:
-            raise GofileAPIError(f"Error: {e}")
+            raise GofileAPIError(f"Error: {e}") from e
 
 
     def _execute_request(self, method: str, url: str, **kwargs):
@@ -138,12 +128,12 @@ class GofileAPI:
 
     def _make_request_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs):
         """
-        Make an API request with automatic retry on rate limit (429).
+        Make an API request, retrying on rate limits and transient failures.
 
         Args:
             method: HTTP method ('get', 'post', 'put', 'delete')
             url: Request URL
-            max_retries: Maximum number of retries for 429 errors
+            max_retries: Maximum number of retries
             **kwargs: Additional arguments to pass to requests
 
         Returns:
@@ -159,12 +149,15 @@ class GofileAPI:
 
                 return self._handle_response(response)
 
-            except RateLimitException:
-                raise
-            except Exception:
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                # Only transient network faults are worth reissuing; an auth
+                # failure or a malformed request will fail identically.
                 if attempt == max_retries:
-                    raise
-                raise
+                    raise GofileHTTPError(
+                        f"Request failed after {max_retries} retries: {e}"
+                    ) from e
+                time.sleep((2 ** attempt) * BACKOFF_BASE_SECONDS)
 
         raise RateLimitException("Max retries exceeded")
 
