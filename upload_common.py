@@ -14,6 +14,10 @@ BACKOFF_BASE_SECONDS = 5
 UPLOAD_MAX_RETRIES = 3
 UPLOAD_RETRY_DELAY = 3
 
+# Seconds to wait for the TCP connection on an upload. Separate from the read
+# timeout, which must stay generous enough for a large file to finish.
+UPLOAD_CONNECT_TIMEOUT = 30
+
 ProgressCallback = Callable[[int, Optional[int]], None]
 
 

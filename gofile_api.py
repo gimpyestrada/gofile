@@ -11,7 +11,11 @@ from typing import Optional, List, Dict, Any, Union
 
 import requests
 
-from upload_common import BACKOFF_BASE_SECONDS, ProgressTrackingFile
+from upload_common import (
+    BACKOFF_BASE_SECONDS,
+    UPLOAD_CONNECT_TIMEOUT,
+    ProgressTrackingFile,
+)
 
 
 SHA256_HASH_LENGTH = 64
@@ -198,8 +202,13 @@ class GofileAPI:
             if folder_id:
                 data['folderId'] = folder_id
 
-            # Use None timeout to disable requests timeout, rely on our progress tracker
-            response = self.session.post(url, files=files, data=data, timeout=None)
+            # ProgressTrackingFile only fires while the body is still being
+            # read, so a read timeout is still needed to catch a connection
+            # that dies while we wait for the server's response.
+            response = self.session.post(
+                url, files=files, data=data,
+                timeout=(UPLOAD_CONNECT_TIMEOUT, self.upload_stall_timeout)
+            )
             return self._handle_response(response)
 
     # ===== FOLDER OPERATIONS =====

@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any
 
 import requests
 
-from upload_common import ProgressTrackingFile
+from upload_common import UPLOAD_CONNECT_TIMEOUT, ProgressTrackingFile
 
 
 class PixeldrainAPIError(Exception):
@@ -144,7 +144,13 @@ class PixeldrainAPI:
             tracked_file = ProgressTrackingFile(f, self.upload_stall_timeout)
             
             try:
-                response = self.session.put(url, data=tracked_file, timeout=None)
+                # ProgressTrackingFile only fires while the body is still being
+                # read, so a read timeout is still needed to catch a connection
+                # that dies while we wait for the server's response.
+                response = self.session.put(
+                    url, data=tracked_file,
+                    timeout=(UPLOAD_CONNECT_TIMEOUT, self.upload_stall_timeout)
+                )
                 return self._handle_response(response)
             except TimeoutError as e:
                 raise NetworkException(str(e)) from e

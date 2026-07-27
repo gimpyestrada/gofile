@@ -20,6 +20,7 @@ import requests
 from requests_toolbelt import MultipartEncoder
 
 from upload_common import (
+    UPLOAD_CONNECT_TIMEOUT,
     UPLOAD_MAX_RETRIES,
     UPLOAD_RETRY_DELAY,
     ProgressTrackingFile,
@@ -256,11 +257,15 @@ class ApkadminAPI:
                     fields["file_0"] = (path.name, tracked, "application/octet-stream")
                     encoder = MultipartEncoder(fields=fields)
 
+                    # ProgressTrackingFile only fires while the body is still
+                    # being read, so a read timeout is still needed to catch a
+                    # connection that dies while awaiting the response.
                     resp = self.session.post(
                         action_url,
                         data=encoder,
                         headers={"Content-Type": encoder.content_type},
-                        timeout=None,
+                        timeout=(UPLOAD_CONNECT_TIMEOUT,
+                                 self.upload_stall_timeout),
                     )
 
                 resp.raise_for_status()

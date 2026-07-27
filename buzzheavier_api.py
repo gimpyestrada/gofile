@@ -12,6 +12,7 @@ import requests
 
 from upload_common import (
     BACKOFF_BASE_SECONDS,
+    UPLOAD_CONNECT_TIMEOUT,
     UPLOAD_MAX_RETRIES,
     UPLOAD_RETRY_DELAY,
     ProgressTrackingFile,
@@ -204,9 +205,14 @@ class BuzzheavierAPI:
                     # Wrap file with progress tracker to prevent timeout during active uploads
                     progress_file = ProgressTrackingFile(f, self.upload_stall_timeout)
                     
-                    # Use PUT method for Buzzheavier upload
-                    # Use None timeout to disable requests timeout, rely on our progress tracker
-                    response = self.session.put(url, data=progress_file, timeout=None)
+                    # ProgressTrackingFile only fires while the body is still
+                    # being read, so a read timeout is still needed to catch a
+                    # connection that dies while awaiting the response.
+                    response = self.session.put(
+                        url, data=progress_file,
+                        timeout=(UPLOAD_CONNECT_TIMEOUT,
+                                 self.upload_stall_timeout)
+                    )
                     return self._handle_response(response)
                     
             except requests.exceptions.RequestException as e:
