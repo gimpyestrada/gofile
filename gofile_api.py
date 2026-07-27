@@ -18,9 +18,6 @@ from upload_common import (
 )
 
 
-SHA256_HASH_LENGTH = 64
-
-
 class GofileAPIError(Exception):
     """Base exception for Gofile API errors."""
 
@@ -230,13 +227,16 @@ class GofileAPI:
 
     def get_content(self,
                     content_id: str,
-                    password: Optional[str] = None) -> Dict[str, Any]:
+                    password: Optional[str] = None,
+                    is_hashed: bool = False) -> Dict[str, Any]:
         """
         Get detailed information about a folder and its contents.
 
         Args:
             content_id: ID of the folder
-            password: SHA-256 hash of password for protected content (optional)
+            password: Password for protected content (optional)
+            is_hashed: Set True when password is already a SHA-256 hex digest.
+                Defaults to False, so a plain password is hashed here.
 
         Returns:
             Dictionary containing folder details and contents
@@ -245,9 +245,10 @@ class GofileAPI:
 
         params = {}
         if password:
-            # API requires SHA-256 hash, but also accepts pre-hashed passwords
-            # This allows flexibility for callers who already have the hash
-            if len(password) != SHA256_HASH_LENGTH:
+            # The API expects a SHA-256 hex digest. Whether the caller already
+            # hashed it must be stated, not guessed: a 64-character plaintext
+            # password would otherwise be sent unhashed.
+            if not is_hashed:
                 password = hashlib.sha256(password.encode()).hexdigest()
             params['password'] = password
 

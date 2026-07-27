@@ -142,11 +142,6 @@ class DragDropUploader:
         self.pixeldrain_enabled = None
         self.apkadmin_enabled = None
 
-        # Pixeldrain-specific state
-        self.pixeldrain_api = None
-        self.pixeldrain_folder_structure = {}
-        self.pixeldrain_ready = False
-
         # GUI components
         self.root = None
         self.log_text = None  # Backward compatibility alias for gofile_log_text
