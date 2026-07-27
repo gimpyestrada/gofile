@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 
 import requests
+from requests_toolbelt import MultipartEncoder
 
 from upload_common import (
     BACKOFF_BASE_SECONDS,
     UPLOAD_CONNECT_TIMEOUT,
+    ProgressCallback,
     ProgressTrackingFile,
 )
 
@@ -163,7 +165,8 @@ class GofileAPI:
     def upload_file(self,
                     file_path: str,
                     folder_id: Optional[str] = None,
-                    region: str = 'auto') -> Dict[str, Any]:
+                    region: str = 'auto',
+                    progress_callback: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         """
         Upload a file to Gofile.
 
@@ -171,6 +174,8 @@ class GofileAPI:
             file_path: Path to the file to upload
             folder_id: Destination folder ID (optional, creates new folder if not provided)
             region: Upload region ('auto', 'eu-par', 'na-phx', 'ap-sgp', 'ap-hkg', 'ap-tyo', 'sa-sao')
+            progress_callback: Called with (bytes_sent, total_size) as the
+                upload proceeds (optional)
 
         Returns:
             Dictionary containing upload response with file information
@@ -184,19 +189,28 @@ class GofileAPI:
         if not file_path_obj.is_file():
             raise ValueError(f"Path is not a file: {file_path}")
 
+        total_size = file_path_obj.stat().st_size
+
         with open(file_path, 'rb') as f:
-            # Wrap file with progress tracker to prevent timeout during active uploads
-            progress_file = ProgressTrackingFile(f, self.upload_stall_timeout)
-            files = {'file': (file_path_obj.name, progress_file)}
-            data = {}
+            tracked = ProgressTrackingFile(
+                f, self.upload_stall_timeout, progress_callback, total_size
+            )
+
+            # MultipartEncoder streams the body in chunks. Passing the file via
+            # requests' files= would buffer the whole multipart body in memory
+            # and read the file in a single call, leaving no progress steps.
+            fields = {'file': (file_path_obj.name, tracked,
+                               'application/octet-stream')}
             if folder_id:
-                data['folderId'] = folder_id
+                fields['folderId'] = folder_id
+            encoder = MultipartEncoder(fields=fields)
 
             # ProgressTrackingFile only fires while the body is still being
             # read, so a read timeout is still needed to catch a connection
             # that dies while we wait for the server's response.
             response = self.session.post(
-                url, files=files, data=data,
+                url, data=encoder,
+                headers={'Content-Type': encoder.content_type},
                 timeout=(UPLOAD_CONNECT_TIMEOUT, self.upload_stall_timeout)
             )
             return self._handle_response(response)

@@ -16,6 +16,7 @@ from upload_common import (
     UPLOAD_CONNECT_TIMEOUT,
     UPLOAD_MAX_RETRIES,
     UPLOAD_RETRY_DELAY,
+    ProgressCallback,
     ProgressTrackingFile,
 )
 
@@ -173,7 +174,8 @@ class BuzzheavierAPI:
                     file_path: str,
                     parent_id: Optional[str] = None,
                     location_id: Optional[str] = None,
-                    max_retries: int = UPLOAD_MAX_RETRIES) -> Dict[str, Any]:
+                    max_retries: int = UPLOAD_MAX_RETRIES,
+                    progress_callback: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         """
         Upload a file to Buzzheavier with automatic retry on network errors.
 
@@ -182,6 +184,8 @@ class BuzzheavierAPI:
             parent_id: Destination parent directory ID (optional, uploads to root if not provided)
             location_id: Upload location ID (optional, uses preferred_location if not specified)
             max_retries: Maximum retry attempts for network errors (default: 3)
+            progress_callback: Called with (bytes_sent, total_size) as the
+                upload proceeds (optional)
 
         Returns:
             Dictionary containing upload response with file information
@@ -191,6 +195,8 @@ class BuzzheavierAPI:
             raise FileNotFoundError(f"File not found: {file_path}")
         if not file_path_obj.is_file():
             raise ValueError(f"Path is not a file: {file_path}")
+
+        total_size = file_path_obj.stat().st_size
 
         # Use specified location or fall back to preferred location
         upload_location = location_id or self.preferred_location
@@ -209,9 +215,11 @@ class BuzzheavierAPI:
         for attempt in range(max_retries + 1):
             try:
                 with open(file_path, 'rb') as f:
-                    # Wrap file with progress tracker to prevent timeout during active uploads
-                    progress_file = ProgressTrackingFile(f, self.upload_stall_timeout)
-                    
+                    progress_file = ProgressTrackingFile(
+                        f, self.upload_stall_timeout, progress_callback,
+                        total_size
+                    )
+
                     # ProgressTrackingFile only fires while the body is still
                     # being read, so a read timeout is still needed to catch a
                     # connection that dies while awaiting the response.

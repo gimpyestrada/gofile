@@ -11,7 +11,11 @@ from urllib.parse import quote
 
 import requests
 
-from upload_common import UPLOAD_CONNECT_TIMEOUT, ProgressTrackingFile
+from upload_common import (
+    UPLOAD_CONNECT_TIMEOUT,
+    ProgressCallback,
+    ProgressTrackingFile,
+)
 
 
 class PixeldrainAPIError(Exception):
@@ -122,30 +126,37 @@ class PixeldrainAPI:
                     continue
                 raise
 
-    def upload_file(self, file_path: str, _list_id: Optional[str] = None) -> Dict[str, Any]:
+    def upload_file(self, file_path: str, _list_id: Optional[str] = None,
+                    progress_callback: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         """
         Upload a file to Pixeldrain using PUT method.
 
         Args:
             file_path: Path to the file to upload
             _list_id: Optional list ID (unused - for future implementation)
+            progress_callback: Called with (bytes_sent, total_size) as the
+                upload proceeds (optional)
 
         Returns:
             Dict containing file information including 'id' (file ID)
         """
         file_path = Path(file_path)
-        
+
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
-        
+
+        total_size = file_path.stat().st_size
+
         # Use PUT /file/{name} as recommended in documentation.
         # Percent-encode the name: '#', '?', and '%' in a filename would
         # otherwise truncate the path or corrupt the query string.
         url = f"{self.BASE_API_URL}/file/{quote(file_path.name, safe='')}"
         
         with open(file_path, 'rb') as f:
-            tracked_file = ProgressTrackingFile(f, self.upload_stall_timeout)
-            
+            tracked_file = ProgressTrackingFile(
+                f, self.upload_stall_timeout, progress_callback, total_size
+            )
+
             try:
                 # ProgressTrackingFile only fires while the body is still being
                 # read, so a read timeout is still needed to catch a connection

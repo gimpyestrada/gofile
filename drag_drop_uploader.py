@@ -51,6 +51,8 @@ class DragDropUploader:
     # How often the main thread drains GUI updates queued by worker threads.
     GUI_QUEUE_POLL_MS = 50
 
+    PROGRESS_BAR_WIDTH = 110
+
     # Only links to these hosts become clickable in the logs. Server responses
     # are echoed into the logs on error, so an arbitrary URL in one must not
     # turn into something the user can click.
@@ -174,6 +176,9 @@ class DragDropUploader:
         self.buzzheavier_status_frame = None
         self.pixeldrain_status_frame = None
         self.apkadmin_status_frame = None
+
+        # Per-host upload progress bars
+        self.host_progress_bars = {}
 
         # Tray icon
         self._tray = None
@@ -922,7 +927,12 @@ class DragDropUploader:
         else:  # "⏳"
             indicator = "⟳"
             color = "orange"
-        
+
+        # Reaching a terminal state means this host's transfer is over, so the
+        # progress bar should not linger at whatever percentage it stopped at.
+        if emoji in ("🟢", "🔴"):
+            self._reset_host_progress(host)
+
         if host == "gofile" and self.gofile_status_indicator:
             self.root.after(0, lambda: self.gofile_status_indicator.config(
                 text=indicator, foreground=color))
@@ -935,6 +945,71 @@ class DragDropUploader:
         elif host == "apkadmin" and self.apkadmin_status_indicator:
             self.root.after(0, lambda: self.apkadmin_status_indicator.config(
                 text=indicator, foreground=color))
+
+    def _create_host_progress_bar(self, host: str, parent) -> None:
+        """
+        Add a hidden progress bar beneath a host's status label.
+
+        Lives inside the status frame so update_visibility, which grids that
+        frame as a unit, keeps working unchanged.
+        """
+        bar = ttk.Progressbar(parent, orient=tk.HORIZONTAL, mode='determinate',
+                              maximum=100, length=self.PROGRESS_BAR_WIDTH)
+        bar.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(2, 0))
+        bar.grid_remove()
+        self.host_progress_bars[host] = bar
+
+    def _make_progress_callback(self, host: str) -> Callable[[int, Optional[int]], None]:
+        """
+        Build a throttled progress callback for one host's upload.
+
+        The callback runs on the upload thread once per chunk, which is far
+        more often than the display needs. Updates are emitted only when the
+        whole-percent value changes, so a large upload queues about a hundred
+        GUI updates instead of thousands.
+        """
+        last_percent = [-1]
+
+        def report(bytes_sent: int, total_size: Optional[int]) -> None:
+            if not total_size:
+                return
+
+            percent = int(bytes_sent * 100 / total_size)
+            if percent == last_percent[0]:
+                return
+            last_percent[0] = percent
+            self._set_host_progress(host, percent)
+
+        return report
+
+    def _set_host_progress(self, host: str, percent: int) -> None:
+        """Show a host's progress bar at the given percentage."""
+        bar = self.host_progress_bars.get(host)
+        if not bar:
+            return
+
+        def update():
+            bar.grid()
+            bar['value'] = percent
+
+        self._run_on_gui_thread(update)
+
+    def _reset_host_progress(self, host: str) -> None:
+        """Hide a host's progress bar and zero it."""
+        bar = self.host_progress_bars.get(host)
+        if not bar:
+            return
+
+        def update():
+            bar['value'] = 0
+            bar.grid_remove()
+
+        self._run_on_gui_thread(update)
+
+    def _reset_all_progress(self) -> None:
+        """Hide every progress bar, e.g. when clearing or starting a batch."""
+        for host in self.host_progress_bars:
+            self._reset_host_progress(host)
 
     def _open_url_from_event(self, event):
         """Open clicked URL inside a log widget."""
@@ -1011,7 +1086,10 @@ class DragDropUploader:
             self.log(f"Uploading - {round(file_size_mb)} MB...", host="gofile")
 
             start_time = time.time()
-            upload_result = self.api.upload_file(file_path, folder_id=version_id)
+            upload_result = self.api.upload_file(
+                file_path, folder_id=version_id,
+                progress_callback=self._make_progress_callback('gofile')
+            )
             upload_time = time.time() - start_time
 
             upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
@@ -1597,7 +1675,10 @@ class DragDropUploader:
             self.log(f"Uploading - {round(file_size_mb)} MB...", host="buzzheavier")
 
             start_time = time.time()
-            result = self.buzzheavier_api.upload_file(file_path, parent_id=version_id)
+            result = self.buzzheavier_api.upload_file(
+                file_path, parent_id=version_id,
+                progress_callback=self._make_progress_callback('buzzheavier')
+            )
             upload_time = time.time() - start_time
 
             upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
@@ -1666,7 +1747,10 @@ class DragDropUploader:
             self.log(f"Uploading - {round(file_size_mb)} MB...", host="pixeldrain")
 
             start_time = time.time()
-            result = self.pixeldrain_api.upload_file(file_path)
+            result = self.pixeldrain_api.upload_file(
+                file_path,
+                progress_callback=self._make_progress_callback('pixeldrain')
+            )
             upload_time = time.time() - start_time
 
             upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
@@ -1732,7 +1816,10 @@ class DragDropUploader:
             self.log(f"Uploading - {round(file_size_mb)} MB...", host="apkadmin")
 
             start_time = time.time()
-            result = self.apkadmin_api.upload_file(file_path)
+            result = self.apkadmin_api.upload_file(
+                file_path,
+                progress_callback=self._make_progress_callback('apkadmin')
+            )
             upload_time = time.time() - start_time
 
             upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
@@ -2551,6 +2638,7 @@ class DragDropUploader:
 
     def clear_all(self) -> None:
         """Clear all public links and reset logs."""
+        self._reset_all_progress()
         if self.gofile_link_entry:
             self.gofile_link_entry.delete(0, tk.END)
         if self.buzzheavier_link_entry:
@@ -2905,9 +2993,10 @@ class DragDropUploader:
                                                       font=('Arial', 9, 'bold'), foreground="orange")
             self.gofile_status_indicator.grid(row=0, column=0)
             
-            self.gofile_status_label = ttk.Label(gofile_status_frame, text=" Gofile:", 
+            self.gofile_status_label = ttk.Label(gofile_status_frame, text=" Gofile:",
                                                   font=('Arial', 9, 'bold'))
             self.gofile_status_label.grid(row=0, column=1)
+            self._create_host_progress_bar('gofile', gofile_status_frame)
             
             self.gofile_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.gofile_link_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
@@ -2943,7 +3032,8 @@ class DragDropUploader:
             self.buzzheavier_status_label = ttk.Label(buzzheavier_status_frame, text=" Buzzheavier:", 
                                                         font=('Arial', 9, 'bold'))
             self.buzzheavier_status_label.grid(row=0, column=1)
-            
+            self._create_host_progress_bar('buzzheavier', buzzheavier_status_frame)
+
             self.buzzheavier_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.buzzheavier_link_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
 
@@ -2977,7 +3067,8 @@ class DragDropUploader:
             self.pixeldrain_status_label = ttk.Label(pixeldrain_status_frame, text=" Pixeldrain:", 
                                                        font=('Arial', 9, 'bold'))
             self.pixeldrain_status_label.grid(row=0, column=1)
-            
+            self._create_host_progress_bar('pixeldrain', pixeldrain_status_frame)
+
             self.pixeldrain_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.pixeldrain_link_entry.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
 
@@ -3013,6 +3104,7 @@ class DragDropUploader:
             self.apkadmin_status_label.grid(row=0, column=1)
             Tooltip(self.apkadmin_status_label,
                     "Scraping-based host. Requires manual cookie refresh from browser. See docs/APKADMIN_SETUP.md")
+            self._create_host_progress_bar('apkadmin', apkadmin_status_frame)
 
             self.apkadmin_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.apkadmin_link_entry.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))

@@ -23,6 +23,7 @@ from upload_common import (
     UPLOAD_CONNECT_TIMEOUT,
     UPLOAD_MAX_RETRIES,
     UPLOAD_RETRY_DELAY,
+    ProgressCallback,
     ProgressTrackingFile,
 )
 
@@ -237,7 +238,8 @@ class ApkadminAPI:
 
         return file_code
 
-    def upload_file(self, file_path: str) -> Dict[str, Any]:
+    def upload_file(self, file_path: str,
+                    progress_callback: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         """
         Upload a file to apkadmin.com.
 
@@ -246,6 +248,8 @@ class ApkadminAPI:
 
         Args:
             file_path: Path to the file to upload.
+            progress_callback: Called with (bytes_sent, total_size) as the
+                upload proceeds (optional).
 
         Returns:
             Dict with keys:
@@ -269,7 +273,10 @@ class ApkadminAPI:
                 action_url, hidden_fields = self._get_upload_form()
 
                 with open(path, "rb") as f:
-                    tracked = ProgressTrackingFile(f, self.upload_stall_timeout)
+                    tracked = ProgressTrackingFile(
+                        f, self.upload_stall_timeout, progress_callback,
+                        path.stat().st_size
+                    )
 
                     # MultipartEncoder streams the body without buffering the
                     # entire file in memory, which is essential for large uploads.
