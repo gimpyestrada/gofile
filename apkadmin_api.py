@@ -13,16 +13,17 @@ URL format for uploaded files: https://apkadmin.com/{file_code}/{filename}.html
 import json
 import re
 import time
-from io import BufferedReader
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
 from requests_toolbelt import MultipartEncoder
 
-
-UPLOAD_MAX_RETRIES = 3
-UPLOAD_RETRY_DELAY = 3
+from upload_common import (
+    UPLOAD_MAX_RETRIES,
+    UPLOAD_RETRY_DELAY,
+    ProgressTrackingFile,
+)
 
 
 class ApkadminAPIError(Exception):
@@ -39,37 +40,6 @@ class ApkadminAuthError(ApkadminAPIError):
 
 class NetworkException(ApkadminAPIError):
     """Exception for transient network errors that may be retryable."""
-
-
-class ProgressTrackingFile:
-    """
-    Wrapper for file objects that tracks upload progress to prevent timeout
-    on active uploads. Only triggers timeout if no data is being transferred.
-    """
-
-    def __init__(self, file_obj: BufferedReader, timeout_seconds: int = 60):
-        self.file_obj = file_obj
-        self.timeout_seconds = timeout_seconds
-        self.last_read_time = time.time()
-
-    def read(self, size: int = -1):
-        """Read data and update progress timestamp."""
-        current_time = time.time()
-        elapsed = current_time - self.last_read_time
-
-        if elapsed > self.timeout_seconds:
-            raise TimeoutError(
-                f"Upload stalled — no data transferred for {self.timeout_seconds}s"
-            )
-
-        data = self.file_obj.read(size)
-        if data:
-            self.last_read_time = time.time()
-        return data
-
-    def __getattr__(self, name):
-        """Delegate other attributes to the wrapped file object."""
-        return getattr(self.file_obj, name)
 
 
 class ApkadminAPI:

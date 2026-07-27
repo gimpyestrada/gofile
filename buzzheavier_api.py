@@ -7,15 +7,15 @@ Supports file uploads, folder management, and content operations.
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any
-from io import BufferedReader
 
 import requests
 
-
-# Constants for rate limiting and retry
-BACKOFF_BASE_SECONDS = 5
-UPLOAD_MAX_RETRIES = 3
-UPLOAD_RETRY_DELAY = 3
+from upload_common import (
+    BACKOFF_BASE_SECONDS,
+    UPLOAD_MAX_RETRIES,
+    UPLOAD_RETRY_DELAY,
+    ProgressTrackingFile,
+)
 
 
 class BuzzheavierAPIError(Exception):
@@ -36,36 +36,6 @@ class RateLimitException(BuzzheavierAPIError):
 
 class NetworkException(BuzzheavierAPIError):
     """Exception raised for transient network errors that may be retryable."""
-
-
-class ProgressTrackingFile:
-    """
-    Wrapper for file objects that tracks upload progress to prevent timeout
-    on active uploads. Only triggers timeout if no data is being transferred.
-    """
-    
-    def __init__(self, file_obj: BufferedReader, timeout_seconds: int = 60):
-        self.file_obj = file_obj
-        self.timeout_seconds = timeout_seconds
-        self.last_read_time = time.time()
-        
-    def read(self, size: int = -1):
-        """Read data and update progress timestamp."""
-        current_time = time.time()
-        elapsed = current_time - self.last_read_time
-        
-        # Only timeout if no progress for timeout_seconds
-        if elapsed > self.timeout_seconds:
-            raise TimeoutError(f"Upload stalled - no data transferred for {self.timeout_seconds}s")
-        
-        data = self.file_obj.read(size)
-        if data:
-            self.last_read_time = time.time()
-        return data
-    
-    def __getattr__(self, name):
-        """Delegate other attributes to the wrapped file object."""
-        return getattr(self.file_obj, name)
 
 
 class BuzzheavierAPI:
