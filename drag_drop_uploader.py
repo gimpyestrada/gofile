@@ -13,6 +13,7 @@ import time
 import tkinter as tk
 import webbrowser
 from collections import deque
+from urllib.parse import urlparse
 from tkinter import ttk, scrolledtext, messagebox
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -81,6 +82,16 @@ class DragDropUploader:
 
     # How often the main thread drains GUI updates queued by worker threads.
     GUI_QUEUE_POLL_MS = 50
+
+    # Only links to these hosts become clickable in the logs. Server responses
+    # are echoed into the logs on error, so an arbitrary URL in one must not
+    # turn into something the user can click.
+    LINK_ALLOWED_HOSTS = frozenset({
+        'gofile.io',
+        'buzzheavier.com',
+        'pixeldrain.com',
+        'apkadmin.com',
+    })
 
     def __init__(self):
         """Initialize the uploader."""
@@ -351,7 +362,7 @@ class DragDropUploader:
             log_widget.tag_add("error", line_start, line_end)
 
         link_match = re.search(r"(https?://\S+)", formatted_msg)
-        if link_match:
+        if link_match and self._is_allowed_link(link_match.group(1)):
             link_text = link_match.group(1)
             line_text = log_widget.get(line_start, line_end)
             pos = line_text.find(link_text)
@@ -359,6 +370,43 @@ class DragDropUploader:
                 start_idx = f"{line_start}+{pos}c"
                 end_idx = f"{start_idx}+{len(link_text)}c"
                 log_widget.tag_add("url", start_idx, end_idx)
+
+    @staticmethod
+    def _mask_email(email: Optional[str]) -> str:
+        """
+        Partially redact an email for display.
+
+        The log is visible in screenshots and screen shares, so it shows just
+        enough to confirm which account is connected.
+        """
+        if not email or '@' not in email:
+            return "(unknown)"
+
+        local, _, domain = email.partition('@')
+        visible = local[:2] if len(local) > 2 else local[:1]
+        return f"{visible}{'*' * 3}@{domain}"
+
+    @classmethod
+    def _is_allowed_link(cls, url: str) -> bool:
+        """
+        Check whether a URL points at one of the configured file hosts.
+
+        Matches the host exactly or as a subdomain, so 'gofile.io.evil.com'
+        and 'notgofile.io' are both rejected.
+        """
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return False
+
+        if parsed.scheme not in ('http', 'https'):
+            return False
+
+        hostname = (parsed.hostname or '').lower().rstrip('.')
+        return any(
+            hostname == allowed or hostname.endswith('.' + allowed)
+            for allowed in cls.LINK_ALLOWED_HOSTS
+        )
 
     @property
     def is_ready(self) -> bool:
@@ -1042,9 +1090,10 @@ class DragDropUploader:
 
         if start_end:
             url = widget.get(start_end[0], start_end[1]).strip()
-            if url.startswith("http"):
+            # Re-check rather than trusting the tag: the widget text is what
+            # actually gets handed to the browser.
+            if self._is_allowed_link(url):
                 webbrowser.open(url)
-                return "break"
         return "break"
 
     def _upload_to_gofile(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
@@ -2246,11 +2295,11 @@ class DragDropUploader:
             account_details = self.api.get_account_details(self.config.account_id)
             self.root_folder_id = account_details.get('rootFolder')
 
-            email = account_details.get('email')
             tier = account_details.get('tier')
 
             self.log("Connected to Gofile account", "SUCCESS", host="gofile")
-            self.log(f"Email: {email}", host="gofile")
+            self.log(f"Account: {self._mask_email(account_details.get('email'))}",
+                     host="gofile")
             self.log(f"Tier: {tier}", host="gofile")
 
             return True

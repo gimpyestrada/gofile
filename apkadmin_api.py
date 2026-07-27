@@ -27,6 +27,26 @@ from upload_common import (
 )
 
 
+EXCERPT_MAX_CHARS = 200
+
+
+def _sanitize_excerpt(text: str) -> str:
+    """
+    Reduce a server response to a short, inert excerpt for an error message.
+
+    The excerpt is surfaced in the GUI log, so markup and URLs are stripped:
+    a scraped site's response is untrusted text and must not be able to plant
+    a link or a wall of HTML in the user's log.
+    """
+    stripped = re.sub(r'<[^>]*>', ' ', text)
+    stripped = re.sub(r'\bhttps?://\S+', '[url]', stripped)
+    collapsed = ' '.join(stripped.split())
+
+    if len(collapsed) > EXCERPT_MAX_CHARS:
+        return collapsed[:EXCERPT_MAX_CHARS] + '...'
+    return collapsed or '(empty response)'
+
+
 class ApkadminAPIError(Exception):
     """Base exception for Apkadmin errors."""
 
@@ -212,7 +232,7 @@ class ApkadminAPI:
         if not file_code:
             raise ApkadminAPIError(
                 f"Could not extract file code from server response. "
-                f"Response excerpt: {resp.text[:200]}"
+                f"Response excerpt: {_sanitize_excerpt(resp.text)}"
             )
 
         return file_code
