@@ -27,6 +27,7 @@ from buzzheavier_api import BuzzheavierAPI, BuzzheavierHTTPError, BuzzheavierAPI
 from pixeldrain_api import PixeldrainAPI, PixeldrainAPIError, NetworkException as PixeldrainNetworkException
 from apkadmin_api import ApkadminAPI, ApkadminAPIError, ApkadminAuthError, NetworkException as ApkadminNetworkException
 from config_loader import get_app_dir, get_default_config_path, load_config
+from apk_naming import normalize_version_folder_name, parse_apk_filename
 
 
 class Tooltip:
@@ -615,56 +616,8 @@ class DragDropUploader:
             self.log_frame.columnconfigure(col, weight=1)
     
     def parse_apk_filename(self, filename: str) -> Optional[Dict[str, str]]:
-        """
-        Parse APK filename to extract package name and version.
-
-        Parameters
-        ----------
-        filename : str
-            The APK filename to parse (e.g.,
-            'com.app.name-1.0-release.apk' or
-            'com.estrada777.projectmyriam-ch.end.03+p-release.apk').
-
-        Returns
-        -------
-        Optional[Dict[str, str]]
-            Dictionary containing 'package', 'version', 'full_name', and
-            'filename' keys if parsing succeeds, None otherwise.
-        """
-        if not filename.lower().endswith('.apk'):
-            return None
-
-        name_without_ext = filename[:-4]
-
-        if '-' not in name_without_ext:
-            return None
-
-        package, remainder = name_without_ext.split('-', 1)
-
-        if not remainder:
-            return None
-
-        version_tokens = remainder.split('-')
-        suffix_tokens = {'release', 'fix', 'hotfix', 'bugfix', 'patch', 'patched'}
-
-        while version_tokens and version_tokens[-1].lower() in suffix_tokens:
-            version_tokens.pop()
-
-        if not version_tokens:
-            return None
-
-        version = '-'.join(version_tokens).strip()
-        package = package.strip()
-
-        if not package or not version:
-            return None
-
-        return {
-            'package': package,
-            'version': version,
-            'full_name': name_without_ext,
-            'filename': filename
-        }
+        """Parse an APK filename. See apk_naming.parse_apk_filename."""
+        return parse_apk_filename(filename)
 
     def save_folder_cache(self, host: str, root_folder_id: str, folders: Dict) -> None:
         """
@@ -906,20 +859,8 @@ class DragDropUploader:
             return None
 
     def _normalize_version_folder_name(self, folder_name: str) -> str:
-        """
-        Normalize version folder names by removing trailing '-release'.
-
-        Parameters
-        ----------
-        folder_name : str
-            Proposed folder name.
-
-        Returns
-        -------
-        str
-            Normalized folder name without a trailing '-release' token.
-        """
-        return re.sub(r'(?i)-release$', '', folder_name)
+        """Normalize a version folder name. See apk_naming."""
+        return normalize_version_folder_name(folder_name)
 
     def create_version_folder(
         self,
