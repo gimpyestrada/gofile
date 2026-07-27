@@ -133,20 +133,19 @@ unchanged. One commit per extracted module, safest first, smoke-testing between 
 - [x] **`refactor: extract Tooltip and GUI helpers into widgets.py`**
 - [x] **`refactor: extract folder cache I/O into folder_cache.py`** — `save_folder_cache`
   / `load_folder_cache` file I/O, parameterized by cache path.
-**Remaining.** The two below are the largest and lowest-risk-to-defer items: pure code
-movement with no behavior change. They were left until after the features, which deliver
-user-visible value, and can be done independently at any time.
-
-- [ ] **`refactor: extract per-host workers into host_workers.py`** — `HostWorkersMixin`
+- [x] **`refactor: extract per-host workers into host_workers.py`** — `HostWorkersMixin`
   with the `_initialize_*`, `_upload_to_*`, and `retry_*` methods.
-- [ ] **`refactor: extract duplicate scanning into duplicate_scan.py`** —
+- [x] **`refactor: extract duplicate scanning into duplicate_scan.py`** —
   `DuplicateScanMixin` with `_detect_duplicates`, `_batch_scan_*`, scan progress dialog,
   decision dialog.
 
 `drag_drop_uploader.py` remains the entry point: `DragDropUploader(HostWorkersMixin,
-DuplicateScanMixin)`, GUI layout (`run()`), queue worker, tray, `main()`. Verify the
-PyInstaller build still resolves the new modules (plain imports, so no spec change
-expected).
+DuplicateScanMixin)`, GUI layout (`run()`), queue worker, tray, `main()`. Confirmed the
+PyInstaller build still resolves the new modules; no spec change was needed.
+
+**Result:** 3,307 lines down to 2,134, with the extracted logic in seven focused modules
+(`apk_naming`, `widgets`, `folder_cache`, `host_workers`, `duplicate_scan`,
+`settings_dialog`, `upload_common`).
 
 ---
 
