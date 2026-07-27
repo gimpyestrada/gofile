@@ -22,7 +22,7 @@ from PIL import Image, UnidentifiedImageError
 import pystray
 from gofile_api import GofileAPIError
 from buzzheavier_api import BuzzheavierAPIError, NetworkException
-from config_loader import get_app_dir, get_default_config_path, load_config
+from config_loader import get_app_dir, load_config
 from apk_naming import normalize_version_folder_name, parse_apk_filename
 from duplicate_scan import DuplicateScanMixin
 from host_workers import HostWorkersMixin
@@ -175,6 +175,7 @@ class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
 
         # Per-host upload progress bars
         self.host_progress_bars = {}
+        self.host_progress_labels = {}
 
         # Tray icon
         self._tray = None
@@ -493,14 +494,6 @@ class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
         self.is_ready = False
         self.update_status("Reconnecting...")
         threading.Thread(target=self.initialize_api, daemon=True).start()
-
-    def open_config_file(self) -> None:
-        """Open config.json in the default system text editor."""
-        config_path = get_default_config_path()
-        if not os.path.exists(config_path):
-            messagebox.showerror("Not Found", f"config.json not found at:\n{config_path}")
-            return
-        os.startfile(config_path)
 
     def _validate_and_save_host_settings(self) -> None:
         """Validate at least one host is enabled before saving."""
@@ -975,13 +968,20 @@ class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
         Add a hidden progress bar beneath a host's status label.
 
         Lives inside the status frame so update_visibility, which grids that
-        frame as a unit, keeps working unchanged.
+        frame as a unit, keeps working unchanged. A percentage label is
+        overlaid on top of the bar via place(), which positions relative to
+        the bar's own geometry without disturbing the grid layout everything
+        else uses.
         """
         bar = ttk.Progressbar(parent, orient=tk.HORIZONTAL, mode='determinate',
                               maximum=100, length=self.PROGRESS_BAR_WIDTH)
         bar.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(2, 0))
         bar.grid_remove()
         self.host_progress_bars[host] = bar
+
+        label = ttk.Label(parent, text="", font=('Arial', 7, 'bold'),
+                          anchor=tk.CENTER)
+        self.host_progress_labels[host] = label
 
     def _make_progress_callback(self, host: str) -> Callable[[int, Optional[int]], None]:
         """
@@ -1007,26 +1007,36 @@ class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
         return report
 
     def _set_host_progress(self, host: str, percent: int) -> None:
-        """Show a host's progress bar at the given percentage."""
+        """Show a host's progress bar at the given percentage, with the
+        percentage overlaid as text centered on the bar."""
         bar = self.host_progress_bars.get(host)
         if not bar:
             return
+        label = self.host_progress_labels.get(host)
 
         def update():
             bar.grid()
             bar['value'] = percent
+            if label:
+                label.config(text=f"{percent}%")
+                # in_=bar tracks the bar's live position/size, so this only
+                # needs to be issued once per show rather than per update.
+                label.place(in_=bar, relx=0.5, rely=0.5, anchor=tk.CENTER)
 
         self._run_on_gui_thread(update)
 
     def _reset_host_progress(self, host: str) -> None:
-        """Hide a host's progress bar and zero it."""
+        """Hide a host's progress bar and its percentage label, and zero it."""
         bar = self.host_progress_bars.get(host)
         if not bar:
             return
+        label = self.host_progress_labels.get(host)
 
         def update():
             bar['value'] = 0
             bar.grid_remove()
+            if label:
+                label.place_forget()
 
         self._run_on_gui_thread(update)
 
@@ -1829,10 +1839,10 @@ class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
             settings_btn.grid(row=0, column=4, sticky=tk.E, padx=(5, 0))
             Tooltip(settings_btn, "Select Hosts")
 
-            config_btn = ttk.Button(link_header_frame, text="📝", width=3,
-                                    command=self.open_config_file)
-            config_btn.grid(row=0, column=5, sticky=tk.E, padx=(5, 0))
-            Tooltip(config_btn, "Open config.json")
+            credentials_btn = ttk.Button(link_header_frame, text="🔑", width=3,
+                                        command=self.open_settings_dialog)
+            credentials_btn.grid(row=0, column=5, sticky=tk.E, padx=(5, 0))
+            Tooltip(credentials_btn, "Edit credentials & settings")
             
             self.link_frame = ttk.Frame(self.main_frame, padding="10")
             self.link_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))

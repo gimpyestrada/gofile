@@ -5,6 +5,7 @@ Editing config.json by hand means a JSON typo breaks startup with no
 explanation. This edits the same keys through a validated form.
 """
 
+import os
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, Dict, List, NamedTuple, Optional
@@ -125,13 +126,31 @@ class SettingsDialog:
             row=row, column=1, sticky=tk.W, pady=(10, 0))
         row += 1
 
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=row, column=0, columnspan=2, pady=(14, 0), sticky=tk.E)
+        footer = ttk.Frame(frame)
+        footer.grid(row=row, column=0, columnspan=2, pady=(14, 0), sticky=(tk.W, tk.E))
+        footer.columnconfigure(0, weight=1)
+
+        # Escape hatch for anything this form doesn't cover, e.g. a key this
+        # dialog doesn't know about yet.
+        ttk.Button(footer, text="Edit config.json…",
+                  command=self._open_raw_config).grid(row=0, column=0, sticky=tk.W)
+
+        buttons = ttk.Frame(footer)
+        buttons.grid(row=0, column=1, sticky=tk.E)
 
         ttk.Button(buttons, text="Save", command=self._save, width=10).grid(
             row=0, column=0, padx=4)
         ttk.Button(buttons, text="Cancel", command=self.window.destroy,
                    width=10).grid(row=0, column=1, padx=4)
+
+    def _open_raw_config(self) -> None:
+        """Open config.json directly, for anything this form doesn't cover."""
+        path = self.config.config_file
+        if not os.path.exists(path):
+            messagebox.showerror("Not Found", f"config.json not found at:\n{path}",
+                                 parent=self.window)
+            return
+        os.startfile(path)
 
     def _toggle_secret_visibility(self) -> None:
         """Reveal or mask the credential fields."""
