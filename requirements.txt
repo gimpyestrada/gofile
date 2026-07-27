@@ -1,5 +1,7 @@
-requests
-requests-toolbelt
-tkinterdnd2
-pystray
-Pillow
+# Pinned for reproducible builds. The app ships as a PyInstaller exe, so an
+# unpinned dependency would silently change what gets bundled.
+requests==2.32.5
+requests-toolbelt==1.0.0
+tkinterdnd2==0.4.3
+pystray==0.19.5
+Pillow==12.1.1
