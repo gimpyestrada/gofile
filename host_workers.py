@@ -34,24 +34,11 @@ from apkadmin_api import (
     ApkadminAuthError,
     NetworkException as ApkadminNetworkException,
 )
-from config_loader import get_app_dir
+from apkadmin_guide import open_apkadmin_setup_guide
 
 
 # Read size for hashing large APKs without loading them into memory.
 MD5_CHUNK_SIZE = 1024 * 1024
-
-
-def open_apkadmin_setup_guide(parent: Optional[tk.Misc] = None) -> None:
-    """Open the Apkadmin cookie setup guide in the default application."""
-    guide_path = os.path.join(get_app_dir(), "docs", "APKADMIN_SETUP.md")
-    if not os.path.exists(guide_path):
-        messagebox.showerror(
-            "Not Found",
-            f"Setup guide not found at:\n{guide_path}",
-            parent=parent,
-        )
-        return
-    os.startfile(guide_path)
 
 
 class HostWorkersMixin:
@@ -241,7 +228,7 @@ class HostWorkersMixin:
         self._run_on_gui_thread(prompt)
 
     def _open_setup_guide(self) -> None:
-        """Open the Apkadmin setup guide in the default application."""
+        """Show the Apkadmin setup guide dialog."""
         open_apkadmin_setup_guide(self.root)
 
     # ===== UPLOAD =====

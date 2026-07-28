@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, Dict, List, NamedTuple, Optional
 
-from host_workers import open_apkadmin_setup_guide
+from apkadmin_guide import open_apkadmin_setup_guide
 
 
 class Field(NamedTuple):
