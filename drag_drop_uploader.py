@@ -1855,13 +1855,13 @@ class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
             self.gofile_status_frame.grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
             gofile_status_frame = self.gofile_status_frame
             
-            self.gofile_status_indicator = ttk.Label(gofile_status_frame, text="⟳", 
+            self.gofile_status_indicator = ttk.Label(gofile_status_frame, text="⟳",
                                                       font=('Arial', 9, 'bold'), foreground="orange")
-            self.gofile_status_indicator.grid(row=0, column=0)
-            
+            self.gofile_status_indicator.grid(row=0, column=0, sticky=tk.W)
+
             self.gofile_status_label = ttk.Label(gofile_status_frame, text=" Gofile:",
                                                   font=('Arial', 9, 'bold'))
-            self.gofile_status_label.grid(row=0, column=1)
+            self.gofile_status_label.grid(row=0, column=1, sticky=tk.W)
             self._create_host_progress_bar('gofile', gofile_status_frame)
             
             self.gofile_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
@@ -1891,13 +1891,13 @@ class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
             self.buzzheavier_status_frame.grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0))
             buzzheavier_status_frame = self.buzzheavier_status_frame
             
-            self.buzzheavier_status_indicator = ttk.Label(buzzheavier_status_frame, text="⟳", 
+            self.buzzheavier_status_indicator = ttk.Label(buzzheavier_status_frame, text="⟳",
                                                             font=('Arial', 9, 'bold'), foreground="orange")
-            self.buzzheavier_status_indicator.grid(row=0, column=0)
-            
-            self.buzzheavier_status_label = ttk.Label(buzzheavier_status_frame, text=" Buzzheavier:", 
+            self.buzzheavier_status_indicator.grid(row=0, column=0, sticky=tk.W)
+
+            self.buzzheavier_status_label = ttk.Label(buzzheavier_status_frame, text=" Buzzheavier:",
                                                         font=('Arial', 9, 'bold'))
-            self.buzzheavier_status_label.grid(row=0, column=1)
+            self.buzzheavier_status_label.grid(row=0, column=1, sticky=tk.W)
             self._create_host_progress_bar('buzzheavier', buzzheavier_status_frame)
 
             self.buzzheavier_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
@@ -1926,13 +1926,13 @@ class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
             self.pixeldrain_status_frame.grid(row=2, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0))
             pixeldrain_status_frame = self.pixeldrain_status_frame
             
-            self.pixeldrain_status_indicator = ttk.Label(pixeldrain_status_frame, text="⟳", 
+            self.pixeldrain_status_indicator = ttk.Label(pixeldrain_status_frame, text="⟳",
                                                            font=('Arial', 9, 'bold'), foreground="orange")
-            self.pixeldrain_status_indicator.grid(row=0, column=0)
-            
-            self.pixeldrain_status_label = ttk.Label(pixeldrain_status_frame, text=" Pixeldrain:", 
+            self.pixeldrain_status_indicator.grid(row=0, column=0, sticky=tk.W)
+
+            self.pixeldrain_status_label = ttk.Label(pixeldrain_status_frame, text=" Pixeldrain:",
                                                        font=('Arial', 9, 'bold'))
-            self.pixeldrain_status_label.grid(row=0, column=1)
+            self.pixeldrain_status_label.grid(row=0, column=1, sticky=tk.W)
             self._create_host_progress_bar('pixeldrain', pixeldrain_status_frame)
 
             self.pixeldrain_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
@@ -1963,11 +1963,11 @@ class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
 
             self.apkadmin_status_indicator = ttk.Label(apkadmin_status_frame, text="⏳",
                                                         font=('Arial', 9, 'bold'), foreground="orange")
-            self.apkadmin_status_indicator.grid(row=0, column=0)
+            self.apkadmin_status_indicator.grid(row=0, column=0, sticky=tk.W)
 
             self.apkadmin_status_label = ttk.Label(apkadmin_status_frame, text=" Apkadmin:",
                                                     font=('Arial', 9, 'bold'))
-            self.apkadmin_status_label.grid(row=0, column=1)
+            self.apkadmin_status_label.grid(row=0, column=1, sticky=tk.W)
             Tooltip(self.apkadmin_status_label,
                     "Scraping-based host. Requires manual cookie refresh from browser. See docs/APKADMIN_SETUP.md")
             self._create_host_progress_bar('apkadmin', apkadmin_status_frame)
