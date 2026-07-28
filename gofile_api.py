@@ -8,16 +8,16 @@ import hashlib
 import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
-from io import BufferedReader
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from requests_toolbelt import MultipartEncoder
 
-
-# Constants for rate limiting and hashing
-BACKOFF_BASE_SECONDS = 5
-SHA256_HASH_LENGTH = 64
+from upload_common import (
+    BACKOFF_BASE_SECONDS,
+    UPLOAD_CONNECT_TIMEOUT,
+    ProgressCallback,
+    ProgressTrackingFile,
+)
 
 
 class GofileAPIError(Exception):
@@ -34,36 +34,6 @@ class GofileResponseError(GofileAPIError):
 
 class RateLimitException(GofileAPIError):
     """Exception raised when API rate limit is exceeded."""
-
-
-class ProgressTrackingFile:
-    """
-    Wrapper for file objects that tracks upload progress to prevent timeout
-    on active uploads. Only triggers timeout if no data is being transferred.
-    """
-    
-    def __init__(self, file_obj: BufferedReader, timeout_seconds: int = 60):
-        self.file_obj = file_obj
-        self.timeout_seconds = timeout_seconds
-        self.last_read_time = time.time()
-        
-    def read(self, size: int = -1):
-        """Read data and update progress timestamp."""
-        current_time = time.time()
-        elapsed = current_time - self.last_read_time
-        
-        # Only timeout if no progress for timeout_seconds
-        if elapsed > self.timeout_seconds:
-            raise TimeoutError(f"Upload stalled - no data transferred for {self.timeout_seconds}s")
-        
-        data = self.file_obj.read(size)
-        if data:
-            self.last_read_time = time.time()
-        return data
-    
-    def __getattr__(self, name):
-        """Delegate other attributes to the wrapped file object."""
-        return getattr(self.file_obj, name)
 
 
 class GofileAPI:
@@ -102,13 +72,13 @@ class GofileAPI:
                 'Authorization': f'Bearer {api_token}'
             })
 
-    def _handle_response(self, response: requests.Response, retry_count: int = 0, max_retries: int = 3) -> Dict[str, Any]:
+    def _handle_response(self, response: requests.Response) -> Dict[str, Any]:
         """
         Handle API response and extract data.
 
-        Implements exponential backoff for rate limiting (429 errors).
-        Per Gofile support: "We send HTTP 429 when you exceed the limit.
-        Use this as a signal to slow down."
+        Rate limits are signalled by raising RateLimitException; backoff is
+        owned by _make_request_with_retry, which is the only layer that can
+        actually reissue the request.
         """
         try:
             response.raise_for_status()
@@ -119,22 +89,12 @@ class GofileAPI:
             raise GofileResponseError(f"API Error: {data}")
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
-                # Rate limit hit - use exponential backoff
-                if retry_count < max_retries:
-                    wait_time = (2 ** retry_count) * 5  # 5, 10, 20 seconds
-                    print(f"⚠ Rate limit (429) - Waiting {wait_time}s before retry {retry_count + 1}/{max_retries}...")
-                    time.sleep(wait_time)
-                    # Note: Caller needs to retry the actual request
-                    raise RateLimitException(f"Rate limit exceeded. Waited {wait_time}s. Retry attempt {retry_count + 1}/{max_retries}")
-
-                raise RateLimitException(f"Rate limit exceeded after {max_retries} retries. Please wait a few minutes before trying again.")
-            raise GofileHTTPError(f"HTTP Error: {e}")
-        except RateLimitException:
-            raise
+                raise RateLimitException(f"Rate limit exceeded: {e}") from e
+            raise GofileHTTPError(f"HTTP Error: {e}") from e
         except GofileAPIError:
             raise
         except Exception as e:
-            raise GofileAPIError(f"Error: {e}")
+            raise GofileAPIError(f"Error: {e}") from e
 
 
     def _execute_request(self, method: str, url: str, **kwargs):
@@ -167,12 +127,12 @@ class GofileAPI:
 
     def _make_request_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs):
         """
-        Make an API request with automatic retry on rate limit (429).
+        Make an API request, retrying on rate limits and transient failures.
 
         Args:
             method: HTTP method ('get', 'post', 'put', 'delete')
             url: Request URL
-            max_retries: Maximum number of retries for 429 errors
+            max_retries: Maximum number of retries
             **kwargs: Additional arguments to pass to requests
 
         Returns:
@@ -188,12 +148,15 @@ class GofileAPI:
 
                 return self._handle_response(response)
 
-            except RateLimitException:
-                raise
-            except Exception:
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                # Only transient network faults are worth reissuing; an auth
+                # failure or a malformed request will fail identically.
                 if attempt == max_retries:
-                    raise
-                raise
+                    raise GofileHTTPError(
+                        f"Request failed after {max_retries} retries: {e}"
+                    ) from e
+                time.sleep((2 ** attempt) * BACKOFF_BASE_SECONDS)
 
         raise RateLimitException("Max retries exceeded")
 
@@ -202,7 +165,8 @@ class GofileAPI:
     def upload_file(self,
                     file_path: str,
                     folder_id: Optional[str] = None,
-                    region: str = 'auto') -> Dict[str, Any]:
+                    region: str = 'auto',
+                    progress_callback: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         """
         Upload a file to Gofile.
 
@@ -210,6 +174,8 @@ class GofileAPI:
             file_path: Path to the file to upload
             folder_id: Destination folder ID (optional, creates new folder if not provided)
             region: Upload region ('auto', 'eu-par', 'na-phx', 'ap-sgp', 'ap-hkg', 'ap-tyo', 'sa-sao')
+            progress_callback: Called with (bytes_sent, total_size) as the
+                upload proceeds (optional)
 
         Returns:
             Dictionary containing upload response with file information
@@ -223,16 +189,30 @@ class GofileAPI:
         if not file_path_obj.is_file():
             raise ValueError(f"Path is not a file: {file_path}")
 
-        with open(file_path, 'rb') as f:
-            # Wrap file with progress tracker to prevent timeout during active uploads
-            progress_file = ProgressTrackingFile(f, self.upload_stall_timeout)
-            files = {'file': (file_path_obj.name, progress_file)}
-            data = {}
-            if folder_id:
-                data['folderId'] = folder_id
+        total_size = file_path_obj.stat().st_size
 
-            # Use None timeout to disable requests timeout, rely on our progress tracker
-            response = self.session.post(url, files=files, data=data, timeout=None)
+        with open(file_path, 'rb') as f:
+            tracked = ProgressTrackingFile(
+                f, self.upload_stall_timeout, progress_callback, total_size
+            )
+
+            # MultipartEncoder streams the body in chunks. Passing the file via
+            # requests' files= would buffer the whole multipart body in memory
+            # and read the file in a single call, leaving no progress steps.
+            fields = {'file': (file_path_obj.name, tracked,
+                               'application/octet-stream')}
+            if folder_id:
+                fields['folderId'] = folder_id
+            encoder = MultipartEncoder(fields=fields)
+
+            # ProgressTrackingFile only fires while the body is still being
+            # read, so a read timeout is still needed to catch a connection
+            # that dies while we wait for the server's response.
+            response = self.session.post(
+                url, data=encoder,
+                headers={'Content-Type': encoder.content_type},
+                timeout=(UPLOAD_CONNECT_TIMEOUT, self.upload_stall_timeout)
+            )
             return self._handle_response(response)
 
     # ===== FOLDER OPERATIONS =====
@@ -261,13 +241,16 @@ class GofileAPI:
 
     def get_content(self,
                     content_id: str,
-                    password: Optional[str] = None) -> Dict[str, Any]:
+                    password: Optional[str] = None,
+                    is_hashed: bool = False) -> Dict[str, Any]:
         """
         Get detailed information about a folder and its contents.
 
         Args:
             content_id: ID of the folder
-            password: SHA-256 hash of password for protected content (optional)
+            password: Password for protected content (optional)
+            is_hashed: Set True when password is already a SHA-256 hex digest.
+                Defaults to False, so a plain password is hashed here.
 
         Returns:
             Dictionary containing folder details and contents
@@ -276,9 +259,10 @@ class GofileAPI:
 
         params = {}
         if password:
-            # API requires SHA-256 hash, but also accepts pre-hashed passwords
-            # This allows flexibility for callers who already have the hash
-            if len(password) != SHA256_HASH_LENGTH:
+            # The API expects a SHA-256 hex digest. Whether the caller already
+            # hashed it must be stated, not guessed: a 64-character plaintext
+            # password would otherwise be sent unhashed.
+            if not is_hashed:
                 password = hashlib.sha256(password.encode()).hexdigest()
             params['password'] = password
 

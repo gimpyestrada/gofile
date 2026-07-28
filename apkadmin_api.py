@@ -13,16 +13,39 @@ URL format for uploaded files: https://apkadmin.com/{file_code}/{filename}.html
 import json
 import re
 import time
-from io import BufferedReader
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
 from requests_toolbelt import MultipartEncoder
 
+from upload_common import (
+    UPLOAD_CONNECT_TIMEOUT,
+    UPLOAD_MAX_RETRIES,
+    UPLOAD_RETRY_DELAY,
+    ProgressCallback,
+    ProgressTrackingFile,
+)
 
-UPLOAD_MAX_RETRIES = 3
-UPLOAD_RETRY_DELAY = 3
+
+EXCERPT_MAX_CHARS = 200
+
+
+def _sanitize_excerpt(text: str) -> str:
+    """
+    Reduce a server response to a short, inert excerpt for an error message.
+
+    The excerpt is surfaced in the GUI log, so markup and URLs are stripped:
+    a scraped site's response is untrusted text and must not be able to plant
+    a link or a wall of HTML in the user's log.
+    """
+    stripped = re.sub(r'<[^>]*>', ' ', text)
+    stripped = re.sub(r'\bhttps?://\S+', '[url]', stripped)
+    collapsed = ' '.join(stripped.split())
+
+    if len(collapsed) > EXCERPT_MAX_CHARS:
+        return collapsed[:EXCERPT_MAX_CHARS] + '...'
+    return collapsed or '(empty response)'
 
 
 class ApkadminAPIError(Exception):
@@ -39,37 +62,6 @@ class ApkadminAuthError(ApkadminAPIError):
 
 class NetworkException(ApkadminAPIError):
     """Exception for transient network errors that may be retryable."""
-
-
-class ProgressTrackingFile:
-    """
-    Wrapper for file objects that tracks upload progress to prevent timeout
-    on active uploads. Only triggers timeout if no data is being transferred.
-    """
-
-    def __init__(self, file_obj: BufferedReader, timeout_seconds: int = 60):
-        self.file_obj = file_obj
-        self.timeout_seconds = timeout_seconds
-        self.last_read_time = time.time()
-
-    def read(self, size: int = -1):
-        """Read data and update progress timestamp."""
-        current_time = time.time()
-        elapsed = current_time - self.last_read_time
-
-        if elapsed > self.timeout_seconds:
-            raise TimeoutError(
-                f"Upload stalled — no data transferred for {self.timeout_seconds}s"
-            )
-
-        data = self.file_obj.read(size)
-        if data:
-            self.last_read_time = time.time()
-        return data
-
-    def __getattr__(self, name):
-        """Delegate other attributes to the wrapped file object."""
-        return getattr(self.file_obj, name)
 
 
 class ApkadminAPI:
@@ -241,12 +233,13 @@ class ApkadminAPI:
         if not file_code:
             raise ApkadminAPIError(
                 f"Could not extract file code from server response. "
-                f"Response excerpt: {resp.text[:200]}"
+                f"Response excerpt: {_sanitize_excerpt(resp.text)}"
             )
 
         return file_code
 
-    def upload_file(self, file_path: str) -> Dict[str, Any]:
+    def upload_file(self, file_path: str,
+                    progress_callback: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         """
         Upload a file to apkadmin.com.
 
@@ -255,6 +248,8 @@ class ApkadminAPI:
 
         Args:
             file_path: Path to the file to upload.
+            progress_callback: Called with (bytes_sent, total_size) as the
+                upload proceeds (optional).
 
         Returns:
             Dict with keys:
@@ -278,7 +273,10 @@ class ApkadminAPI:
                 action_url, hidden_fields = self._get_upload_form()
 
                 with open(path, "rb") as f:
-                    tracked = ProgressTrackingFile(f, self.upload_stall_timeout)
+                    tracked = ProgressTrackingFile(
+                        f, self.upload_stall_timeout, progress_callback,
+                        path.stat().st_size
+                    )
 
                     # MultipartEncoder streams the body without buffering the
                     # entire file in memory, which is essential for large uploads.
@@ -286,11 +284,15 @@ class ApkadminAPI:
                     fields["file_0"] = (path.name, tracked, "application/octet-stream")
                     encoder = MultipartEncoder(fields=fields)
 
+                    # ProgressTrackingFile only fires while the body is still
+                    # being read, so a read timeout is still needed to catch a
+                    # connection that dies while awaiting the response.
                     resp = self.session.post(
                         action_url,
                         data=encoder,
                         headers={"Content-Type": encoder.content_type},
-                        timeout=None,
+                        timeout=(UPLOAD_CONNECT_TIMEOUT,
+                                 self.upload_stall_timeout),
                     )
 
                 resp.raise_for_status()

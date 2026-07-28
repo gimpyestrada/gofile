@@ -7,9 +7,15 @@ Supports file uploads and list management.
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any
-from io import BufferedReader
+from urllib.parse import quote
 
 import requests
+
+from upload_common import (
+    UPLOAD_CONNECT_TIMEOUT,
+    ProgressCallback,
+    ProgressTrackingFile,
+)
 
 
 class PixeldrainAPIError(Exception):
@@ -26,35 +32,6 @@ class RateLimitException(PixeldrainAPIError):
 
 class NetworkException(PixeldrainAPIError):
     """Exception for network-related issues."""
-
-
-class ProgressTrackingFile:
-    """
-    Wrapper for file objects that tracks upload progress to prevent timeout
-    on active uploads. Only triggers timeout if no data is being transferred.
-    """
-    
-    def __init__(self, file_obj: BufferedReader, timeout_seconds: int = 60):
-        self.file_obj = file_obj
-        self.timeout_seconds = timeout_seconds
-        self.last_read_time = time.time()
-        
-    def read(self, size: int = -1):
-        """Read data and update progress timestamp."""
-        current_time = time.time()
-        elapsed = current_time - self.last_read_time
-        
-        if elapsed > self.timeout_seconds:
-            raise TimeoutError(f"Upload stalled - no data transferred for {self.timeout_seconds}s")
-        
-        data = self.file_obj.read(size)
-        if data:
-            self.last_read_time = time.time()
-        return data
-    
-    def __getattr__(self, name):
-        """Delegate other attributes to the wrapped file object."""
-        return getattr(self.file_obj, name)
 
 
 class PixeldrainAPI:
@@ -149,30 +126,45 @@ class PixeldrainAPI:
                     continue
                 raise
 
-    def upload_file(self, file_path: str, _list_id: Optional[str] = None) -> Dict[str, Any]:
+    def upload_file(self, file_path: str, _list_id: Optional[str] = None,
+                    progress_callback: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         """
         Upload a file to Pixeldrain using PUT method.
 
         Args:
             file_path: Path to the file to upload
             _list_id: Optional list ID (unused - for future implementation)
+            progress_callback: Called with (bytes_sent, total_size) as the
+                upload proceeds (optional)
 
         Returns:
             Dict containing file information including 'id' (file ID)
         """
         file_path = Path(file_path)
-        
+
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
-        
-        # Use PUT /file/{name} as recommended in documentation
-        url = f"{self.BASE_API_URL}/file/{file_path.name}"
+
+        total_size = file_path.stat().st_size
+
+        # Use PUT /file/{name} as recommended in documentation.
+        # Percent-encode the name: '#', '?', and '%' in a filename would
+        # otherwise truncate the path or corrupt the query string.
+        url = f"{self.BASE_API_URL}/file/{quote(file_path.name, safe='')}"
         
         with open(file_path, 'rb') as f:
-            tracked_file = ProgressTrackingFile(f, self.upload_stall_timeout)
-            
+            tracked_file = ProgressTrackingFile(
+                f, self.upload_stall_timeout, progress_callback, total_size
+            )
+
             try:
-                response = self.session.put(url, data=tracked_file, timeout=None)
+                # ProgressTrackingFile only fires while the body is still being
+                # read, so a read timeout is still needed to catch a connection
+                # that dies while we wait for the server's response.
+                response = self.session.put(
+                    url, data=tracked_file,
+                    timeout=(UPLOAD_CONNECT_TIMEOUT, self.upload_stall_timeout)
+                )
                 return self._handle_response(response)
             except TimeoutError as e:
                 raise NetworkException(str(e)) from e

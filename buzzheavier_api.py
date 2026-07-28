@@ -7,15 +7,18 @@ Supports file uploads, folder management, and content operations.
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any
-from io import BufferedReader
+from urllib.parse import quote
 
 import requests
 
-
-# Constants for rate limiting and retry
-BACKOFF_BASE_SECONDS = 5
-UPLOAD_MAX_RETRIES = 3
-UPLOAD_RETRY_DELAY = 3
+from upload_common import (
+    BACKOFF_BASE_SECONDS,
+    UPLOAD_CONNECT_TIMEOUT,
+    UPLOAD_MAX_RETRIES,
+    UPLOAD_RETRY_DELAY,
+    ProgressCallback,
+    ProgressTrackingFile,
+)
 
 
 class BuzzheavierAPIError(Exception):
@@ -36,36 +39,6 @@ class RateLimitException(BuzzheavierAPIError):
 
 class NetworkException(BuzzheavierAPIError):
     """Exception raised for transient network errors that may be retryable."""
-
-
-class ProgressTrackingFile:
-    """
-    Wrapper for file objects that tracks upload progress to prevent timeout
-    on active uploads. Only triggers timeout if no data is being transferred.
-    """
-    
-    def __init__(self, file_obj: BufferedReader, timeout_seconds: int = 60):
-        self.file_obj = file_obj
-        self.timeout_seconds = timeout_seconds
-        self.last_read_time = time.time()
-        
-    def read(self, size: int = -1):
-        """Read data and update progress timestamp."""
-        current_time = time.time()
-        elapsed = current_time - self.last_read_time
-        
-        # Only timeout if no progress for timeout_seconds
-        if elapsed > self.timeout_seconds:
-            raise TimeoutError(f"Upload stalled - no data transferred for {self.timeout_seconds}s")
-        
-        data = self.file_obj.read(size)
-        if data:
-            self.last_read_time = time.time()
-        return data
-    
-    def __getattr__(self, name):
-        """Delegate other attributes to the wrapped file object."""
-        return getattr(self.file_obj, name)
 
 
 class BuzzheavierAPI:
@@ -162,12 +135,12 @@ class BuzzheavierAPI:
 
     def _make_request_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs):
         """
-        Make an API request with automatic retry on rate limit (429).
+        Make an API request, retrying on rate limits and transient failures.
 
         Args:
             method: HTTP method ('get', 'post', 'put', 'delete', 'patch')
             url: Request URL
-            max_retries: Maximum number of retries for 429 errors
+            max_retries: Maximum number of retries
             **kwargs: Additional arguments to pass to requests
 
         Returns:
@@ -183,12 +156,15 @@ class BuzzheavierAPI:
 
                 return self._handle_response(response)
 
-            except RateLimitException:
-                raise
-            except Exception:
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                # Only transient network faults are worth reissuing; an auth
+                # failure or a malformed request will fail identically.
                 if attempt == max_retries:
-                    raise
-                raise
+                    raise NetworkException(
+                        f"Request failed after {max_retries} retries: {e}"
+                    ) from e
+                time.sleep((2 ** attempt) * BACKOFF_BASE_SECONDS)
 
         raise RateLimitException("Max retries exceeded")
 
@@ -198,7 +174,8 @@ class BuzzheavierAPI:
                     file_path: str,
                     parent_id: Optional[str] = None,
                     location_id: Optional[str] = None,
-                    max_retries: int = UPLOAD_MAX_RETRIES) -> Dict[str, Any]:
+                    max_retries: int = UPLOAD_MAX_RETRIES,
+                    progress_callback: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         """
         Upload a file to Buzzheavier with automatic retry on network errors.
 
@@ -207,6 +184,8 @@ class BuzzheavierAPI:
             parent_id: Destination parent directory ID (optional, uploads to root if not provided)
             location_id: Upload location ID (optional, uses preferred_location if not specified)
             max_retries: Maximum retry attempts for network errors (default: 3)
+            progress_callback: Called with (bytes_sent, total_size) as the
+                upload proceeds (optional)
 
         Returns:
             Dictionary containing upload response with file information
@@ -217,26 +196,38 @@ class BuzzheavierAPI:
         if not file_path_obj.is_file():
             raise ValueError(f"Path is not a file: {file_path}")
 
+        total_size = file_path_obj.stat().st_size
+
         # Use specified location or fall back to preferred location
         upload_location = location_id or self.preferred_location
 
-        # Build upload URL with location parameter
+        # Percent-encode the name: '#', '?', and '%' in a filename would
+        # otherwise truncate the path or corrupt the query string.
+        encoded_name = quote(file_path_obj.name, safe='')
+
         if parent_id:
-            url = f"{self.BASE_UPLOAD_URL}/{parent_id}/{file_path_obj.name}?locationId={upload_location}"
+            url = f"{self.BASE_UPLOAD_URL}/{parent_id}/{encoded_name}?locationId={upload_location}"
         else:
-            url = f"{self.BASE_UPLOAD_URL}/{file_path_obj.name}?locationId={upload_location}"
+            url = f"{self.BASE_UPLOAD_URL}/{encoded_name}?locationId={upload_location}"
 
         # Retry loop for transient network errors
         last_exception = None
         for attempt in range(max_retries + 1):
             try:
                 with open(file_path, 'rb') as f:
-                    # Wrap file with progress tracker to prevent timeout during active uploads
-                    progress_file = ProgressTrackingFile(f, self.upload_stall_timeout)
-                    
-                    # Use PUT method for Buzzheavier upload
-                    # Use None timeout to disable requests timeout, rely on our progress tracker
-                    response = self.session.put(url, data=progress_file, timeout=None)
+                    progress_file = ProgressTrackingFile(
+                        f, self.upload_stall_timeout, progress_callback,
+                        total_size
+                    )
+
+                    # ProgressTrackingFile only fires while the body is still
+                    # being read, so a read timeout is still needed to catch a
+                    # connection that dies while awaiting the response.
+                    response = self.session.put(
+                        url, data=progress_file,
+                        timeout=(UPLOAD_CONNECT_TIMEOUT,
+                                 self.upload_stall_timeout)
+                    )
                     return self._handle_response(response)
                     
             except requests.exceptions.RequestException as e:

@@ -29,6 +29,9 @@ MANIFEST
 # PyInstaller
 *.manifest
 *.spec
+# The build spec is project configuration, not a build artifact: it controls
+# what gets bundled into the exe, so it needs to be version controlled.
+!GofileUploader.spec
 
 # Installer logs
 pip-log.txt

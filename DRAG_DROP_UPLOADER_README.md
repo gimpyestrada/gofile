@@ -13,7 +13,6 @@ A powerful GUI application that lets you drag and drop APK files to automaticall
 - 📁 **Drag & Drop Interface**: Just drag APK files onto the window
 - 📚 **Multi-File Drop Queue**: Drop multiple APKs at once; uploads run sequentially
 - 🔍 **Batch Duplicate Detection**: Scans all queued files upfront with single decision dialog for unattended uploads
-- 🎯 **Mini Mode**: Compact always-on-top window for keeping on your desktop
 - 🤖 **Intelligent Folder Management**: Automatically organizes files on Gofile and Buzzheavier
 - 🔗 **Multi-Host Public Links**: Get public links from all enabled hosts immediately as they finish
 - � **Copy All Links**: One-click button to copy all enabled host links to clipboard (one per line)
@@ -126,22 +125,6 @@ A window will appear:
 9. Only enabled hosts are visible in the UI
 10. Non-APK drops are skipped automatically with highlighted log entries
 
-### Mini Mode (Always on Top)
-
-1. Check the **"Mini Mode (Always on Top)"** checkbox
-2. Window shrinks to a compact stacked layout
-3. Window stays on top of all other windows
-4. Shows:
-   - Drop zone with folder icon
-   - Status indicator
-   - All enabled host links stacked vertically
-   - Copy/Open buttons for each enabled host
-   - Normal checkbox (to return to full mode)
-5. Perfect for keeping on your desktop while working
-6. Only enabled hosts appear in mini mode
-
-**Toggle back**: Uncheck the "Normal" checkbox in mini mode
-
 ## 🔧 How It Works
 
 ### Folder Organization
@@ -215,13 +198,12 @@ The uploader maintains separate local caches for each host:
 
 ## 📸 Screenshots
 
-### Normal Mode (900x600)
+### Main Window (900x800)
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │ Drop Zone                                                      │
 │  📁 Drag & Drop APK Files Here                                │
 │  Status: Ready - Drop APK file here                           │
-│  ☑ Mini Mode (Always on Top)                                 │
 └────────────────────────────────────────────────────────────────┘
 
 ┌────────────────────────────────────────────────────────────────┐
@@ -240,25 +222,6 @@ The uploader maintains separate local caches for each host:
 │  [09:30:23] Public link ready│  [09:30:21] Public link ready   │
 └──────────────────────────────┴─────────────────────────────────┘
 ```
-
-### Mini Mode (200x320)
-```
-┌─────────────────────┐
-│                     │
-│   Drop APK Here     │
-│        📁           │
-│      Ready          │
-│                     │
-│ 🟢 Gofile:         │
-│ [link] [C][O][R]   │
-│                     │
-│ 🟢 Buzzheavier:    │
-│ [link] [C][O][R]   │
-│                     │
-│      [Normal]       │
-└─────────────────────┘
-```
-(Always stays on top of other windows)
 
 ## 💡 Features in Detail
 
@@ -289,14 +252,6 @@ The uploader maintains separate local caches for each host:
 - Uses base URLs (e.g., https://gofile.io) if no links generated yet
 - Perfect for quickly sharing all mirror links
 
-### Mini Mode
-- Compact window with stacked layout
-- Always stays on top of other windows
-- Perfect for keeping accessible while working
-- Quick access to all enabled host links and controls
-- Easy toggle back to normal mode
-- Automatically adjusts to show only enabled hosts
-
 ### Upload Speed Display
 Shows real-time upload performance for each host:
 - **MB/s**: Megabytes per second (file transfer rate)
@@ -325,7 +280,6 @@ Visual colored text indicators for each host:
 - **✓ (green)**: Upload successful
 - **✗ (red)**: Upload failed
 - Updates in real-time during upload
-- Same indicators in both normal and mini mode
 
 ### Color-Coded Logs
 Each host has its own log with color coding:
@@ -415,7 +369,7 @@ If the folder structure seems outdated:
 ## 💡 Tips & Best Practices
 
 - Keep the window open and ready - it uses minimal resources
-- Use **Mini Mode** to keep it accessible on your desktop while working
+- Minimize to the system tray to keep it out of the way while working
 - Configure which hosts to use based on your needs (more hosts = more redundancy)
 - Use **Copy All Links** button to quickly grab all mirror links for sharing
 - Gofile/Buzzheavier caches last 24 hours for fast folder lookups

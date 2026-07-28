@@ -4,97 +4,65 @@ A GUI application that accepts drag-and-drop APK files and uploads them to the a
 Gofile folder structure, then returns a public link.
 """
 
+import hashlib
 import os
 import re
 import sys
-import json
+import queue
 import time
 import tkinter as tk
 import webbrowser
 from collections import deque
+from urllib.parse import urlparse
 from tkinter import ttk, scrolledtext, messagebox
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime
+from typing import Callable, Dict, List, Optional
 import threading
 from PIL import Image, UnidentifiedImageError
 import pystray
-from gofile_api import GofileAPI, GofileAPIError
-from buzzheavier_api import BuzzheavierAPI, BuzzheavierHTTPError, BuzzheavierAPIError, NetworkException
-from apkadmin_api import ApkadminAPI, ApkadminAPIError, ApkadminAuthError, NetworkException as ApkadminNetworkException
-from config_loader import load_config
+from gofile_api import GofileAPIError
+from buzzheavier_api import BuzzheavierAPIError, NetworkException
+from config_loader import get_app_dir, load_config
+from apk_naming import normalize_version_folder_name, parse_apk_filename
+from duplicate_scan import DuplicateScanMixin
+from host_workers import HostWorkersMixin
+from widgets import Tooltip
+from settings_dialog import SettingsDialog
+import folder_cache
 
 
-class Tooltip:
-    """Simple tooltip widget for tkinter."""
-    
-    def __init__(self, widget, text):
-        """Initialize tooltip with widget and text."""
-        self.widget = widget
-        self.text = text
-        self.tipwindow = None
-        self.id = None
-        self.x = self.y = 0
-        
-        self.widget.bind("<Enter>", self.showtip, add=True)
-        self.widget.bind("<Leave>", self.hidetip, add=True)
-    
-    def showtip(self, _event=None):
-        """Display the tooltip."""
-        if self.tipwindow or not self.text:
-            return
-        
-        x = self.widget.winfo_rootx() + self.widget.winfo_width() // 2
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
-        
-        self.tipwindow = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        
-        label = tk.Label(tw, text=self.text, background="lightyellow", 
-                        relief=tk.SOLID, borderwidth=1, font=("Arial", 8))
-        label.pack(ipadx=5, ipady=2)
-    
-    def hidetip(self, _event=None):
-        """Hide the tooltip."""
-        tw = self.tipwindow
-        self.tipwindow = None
-        if tw:
-            tw.destroy()
-
-
-class DragDropUploader:
+class DragDropUploader(HostWorkersMixin, DuplicateScanMixin):
     """Drag and drop uploader with GUI."""
 
-    # Cache file path - use user's local appdata for persistence
-    @staticmethod
-    def _get_cache_dir():
-        """Get the cache directory path that works for both script and executable."""
-        # Try to get executable directory first (for PyInstaller)
-        if getattr(sys, 'frozen', False):
-            # Running as compiled executable
-            app_dir = os.path.dirname(sys.executable)
-        else:
-            # Running as script
-            app_dir = os.path.dirname(os.path.abspath(__file__))
-        return app_dir
-    
     CACHE_EXPIRY_HOURS = 24
 
     # Window dimensions
-    NORMAL_MODE_WIDTH = 900
-    NORMAL_MODE_HEIGHT = 800
-    MINI_MODE_WIDTH = 200
-    MINI_MODE_HEIGHT = 320
+    WINDOW_WIDTH = 900
+    WINDOW_HEIGHT = 800
 
     # API delays (seconds)
     API_FOLDER_CREATE_DELAY = 2
     API_FOLDER_UPDATE_DELAY = 1
 
+    # How often the main thread drains GUI updates queued by worker threads.
+    GUI_QUEUE_POLL_MS = 50
+
+    PROGRESS_BAR_WIDTH = 110
+
+    # Only links to these hosts become clickable in the logs. Server responses
+    # are echoed into the logs on error, so an arbitrary URL in one must not
+    # turn into something the user can click.
+    LINK_ALLOWED_HOSTS = frozenset({
+        'gofile.io',
+        'buzzheavier.com',
+        'pixeldrain.com',
+        'apkadmin.com',
+    })
+
     def __init__(self):
         """Initialize the uploader."""
         # Set cache file path
-        self.FOLDER_CACHE_FILE = os.path.join(self._get_cache_dir(), "folder_structure_cache.json")
+        self.FOLDER_CACHE_FILE = os.path.join(get_app_dir(), "folder_structure_cache.json")
         # Gofile API
         self.api = None
         self.root_folder_id = None
@@ -117,6 +85,7 @@ class DragDropUploader:
         self.config = None
 
         # Thread safety
+        self._gui_queue = queue.Queue()
         self._ready_lock = threading.Lock()
         self._is_ready = False
         self._gofile_ready = False
@@ -150,11 +119,6 @@ class DragDropUploader:
         self.pixeldrain_enabled = None
         self.apkadmin_enabled = None
 
-        # Pixeldrain-specific state
-        self.pixeldrain_api = None
-        self.pixeldrain_folder_structure = {}
-        self.pixeldrain_ready = False
-
         # GUI components
         self.root = None
         self.log_text = None  # Backward compatibility alias for gofile_log_text
@@ -174,15 +138,12 @@ class DragDropUploader:
         self.pixeldrain_link_entry = None
         self.apkadmin_link_entry = None
         self.is_ready = False
-        self.mini_mode = None  # Will be set after root window created
 
         # Frames and widgets
         self.main_frame = None
         self.drop_frame = None
         self.link_frame = None
         self.log_frame = None
-        self.mini_frame = None
-        self.mini_status_label = None
         self.file_info_frame = None
         self.file_name_label = None
         self.file_size_label = None
@@ -212,11 +173,9 @@ class DragDropUploader:
         self.pixeldrain_status_frame = None
         self.apkadmin_status_frame = None
 
-        # Mini mode indicators
-        self.mini_gofile_indicator = None
-        self.mini_buzzheavier_indicator = None
-        self.mini_pixeldrain_indicator = None
-        self.mini_apkadmin_indicator = None
+        # Per-host upload progress bars
+        self.host_progress_bars = {}
+        self.host_progress_labels = {}
 
         # Tray icon
         self._tray = None
@@ -260,6 +219,44 @@ class DragDropUploader:
         self.root.lift()
         self.root.focus_force()
 
+    def _run_on_gui_thread(self, action: Callable[[], None]) -> None:
+        """
+        Run a widget update on the Tk main thread.
+
+        Tkinter is not thread-safe, and uploads, duplicate scans, and host
+        initialization all run on background threads. Updates from those
+        threads go onto a queue that ``_pump_gui_queue`` drains on the main
+        thread.
+
+        Calling ``root.after`` from a worker thread is not an option here:
+        host initialization starts before ``mainloop()`` does, and ``after``
+        raises RuntimeError when the loop is not yet running. Queueing keeps
+        those early messages instead of dropping them.
+        """
+        if threading.current_thread() is threading.main_thread():
+            self._safe_gui_call(action)
+        else:
+            self._gui_queue.put(action)
+
+    @staticmethod
+    def _safe_gui_call(action: Callable[[], None]) -> None:
+        """Run a GUI update, ignoring failures from a torn-down window."""
+        try:
+            action()
+        except tk.TclError:
+            pass
+
+    def _pump_gui_queue(self) -> None:
+        """Drain queued GUI updates. Reschedules itself on the main thread."""
+        try:
+            while True:
+                self._safe_gui_call(self._gui_queue.get_nowait())
+        except queue.Empty:
+            pass
+
+        if self.root:
+            self.root.after(self.GUI_QUEUE_POLL_MS, self._pump_gui_queue)
+
     def _exit_app(self) -> None:
         """Gracefully stop the tray icon and exit the GUI loop."""
         if self._tray:
@@ -287,58 +284,99 @@ class DragDropUploader:
 
         print(message)
 
-        # Helper function to add message to a log widget
-        def add_to_log(log_widget):
-            if log_widget:
-                if "url" not in log_widget.tag_names():
-                    log_widget.tag_config("url", foreground="blue", underline=True)
-                    log_widget.tag_bind("url", "<Button-1>", self._open_url_from_event, add="+")
-                    log_widget.tag_bind("url", "<Enter>", lambda e: e.widget.config(cursor="hand2"), add="+")
-                    log_widget.tag_bind("url", "<Leave>", lambda e: e.widget.config(cursor=""), add="+")
+        widgets = self._log_widgets_for_host(host)
+        if not widgets:
+            return
 
-                log_widget.insert(tk.END, formatted_msg)
-                log_widget.see(tk.END)
+        self._run_on_gui_thread(
+            lambda: [self._append_to_log(w, formatted_msg, level)
+                     for w in widgets]
+        )
 
-                # Color coding
-                if level == "SUCCESS":
-                    line_start = log_widget.index("end-2c linestart")
-                    line_end = log_widget.index("end-1c lineend")
-                    log_widget.tag_add("success", line_start, line_end)
-                elif level == "ERROR":
-                    line_start = log_widget.index("end-2c linestart")
-                    line_end = log_widget.index("end-1c lineend")
-                    log_widget.tag_add("error", line_start, line_end)
+    def _log_widgets_for_host(self, host: str) -> List:
+        """Resolve which log widgets a message should be written to."""
+        routes = {
+            "general": [self.general_log_text],
+            "gofile": [self.gofile_log_text],
+            "buzzheavier": [self.buzzheavier_log_text],
+            "pixeldrain": [self.pixeldrain_log_text],
+            "apkadmin": [self.apkadmin_log_text],
+            "both": [self.gofile_log_text, self.buzzheavier_log_text],
+        }
+        widgets = list(routes.get(host, []))
 
-                link_match = re.search(r"(https?://\S+)", formatted_msg)
-                if link_match:
-                    link_text = link_match.group(1)
-                    line_start = log_widget.index("end-2c linestart")
-                    line_end = log_widget.index("end-1c lineend")
-                    line_text = log_widget.get(line_start, line_end)
-                    pos = line_text.find(link_text)
-                    if pos >= 0:
-                        start_idx = f"{line_start}+{pos}c"
-                        end_idx = f"{start_idx}+{len(link_text)}c"
-                        log_widget.tag_add("url", start_idx, end_idx)
+        # Backward compatibility with the pre-multi-host single log widget.
+        if self.log_text and self.log_text is not self.gofile_log_text:
+            widgets.append(self.log_text)
 
-        # Route to appropriate log(s)
-        if host == "general":
-            add_to_log(self.general_log_text)
-        elif host == "gofile":
-            add_to_log(self.gofile_log_text)
-        elif host == "buzzheavier":
-            add_to_log(self.buzzheavier_log_text)
-        elif host == "pixeldrain":
-            add_to_log(self.pixeldrain_log_text)
-        elif host == "apkadmin":
-            add_to_log(self.apkadmin_log_text)
-        elif host == "both":
-            add_to_log(self.gofile_log_text)
-            add_to_log(self.buzzheavier_log_text)
-        
-        # Backward compatibility: if old log_text exists and is different from gofile_log_text
-        if self.log_text and self.log_text != self.gofile_log_text:
-            add_to_log(self.log_text)
+        return [w for w in widgets if w]
+
+    def _append_to_log(self, log_widget, formatted_msg: str,
+                       level: str) -> None:
+        """Insert one line into a log widget. Must run on the GUI thread."""
+        if "url" not in log_widget.tag_names():
+            log_widget.tag_config("url", foreground="blue", underline=True)
+            log_widget.tag_bind("url", "<Button-1>", self._open_url_from_event, add="+")
+            log_widget.tag_bind("url", "<Enter>", lambda e: e.widget.config(cursor="hand2"), add="+")
+            log_widget.tag_bind("url", "<Leave>", lambda e: e.widget.config(cursor=""), add="+")
+
+        log_widget.insert(tk.END, formatted_msg)
+        log_widget.see(tk.END)
+
+        line_start = log_widget.index("end-2c linestart")
+        line_end = log_widget.index("end-1c lineend")
+
+        if level == "SUCCESS":
+            log_widget.tag_add("success", line_start, line_end)
+        elif level == "ERROR":
+            log_widget.tag_add("error", line_start, line_end)
+
+        link_match = re.search(r"(https?://\S+)", formatted_msg)
+        if link_match and self._is_allowed_link(link_match.group(1)):
+            link_text = link_match.group(1)
+            line_text = log_widget.get(line_start, line_end)
+            pos = line_text.find(link_text)
+            if pos >= 0:
+                start_idx = f"{line_start}+{pos}c"
+                end_idx = f"{start_idx}+{len(link_text)}c"
+                log_widget.tag_add("url", start_idx, end_idx)
+
+    @staticmethod
+    def _mask_email(email: Optional[str]) -> str:
+        """
+        Partially redact an email for display.
+
+        The log is visible in screenshots and screen shares, so it shows just
+        enough to confirm which account is connected.
+        """
+        if not email or '@' not in email:
+            return "(unknown)"
+
+        local, _, domain = email.partition('@')
+        visible = local[:2] if len(local) > 2 else local[:1]
+        return f"{visible}{'*' * 3}@{domain}"
+
+    @classmethod
+    def _is_allowed_link(cls, url: str) -> bool:
+        """
+        Check whether a URL points at one of the configured file hosts.
+
+        Matches the host exactly or as a subdomain, so 'gofile.io.evil.com'
+        and 'notgofile.io' are both rejected.
+        """
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return False
+
+        if parsed.scheme not in ('http', 'https'):
+            return False
+
+        hostname = (parsed.hostname or '').lower().rstrip('.')
+        return any(
+            hostname == allowed or hostname.endswith('.' + allowed)
+            for allowed in cls.LINK_ALLOWED_HOSTS
+        )
 
     @property
     def is_ready(self) -> bool:
@@ -353,12 +391,11 @@ class DragDropUploader:
             self._is_ready = value
 
     def update_status(self, message: str) -> None:
-        """Update status label in both normal and mini mode."""
+        """Update the status label from any thread."""
         if self.status_label:
-            self.status_label.config(text=message)
-        if hasattr(self, 'mini_status_label') and self.mini_status_label:
-            core_status = message.split(' - ')[-1] if ' - ' in message else message
-            self.mini_status_label.config(text=core_status)
+            self._run_on_gui_thread(
+                lambda: self.status_label.config(text=message)
+            )
 
     def save_host_settings(self) -> None:
         """Save enabled host settings to config.json."""
@@ -423,20 +460,40 @@ class DragDropUploader:
             variable=self.apkadmin_enabled,
             command=self._validate_and_save_host_settings
         )
-        
+
+        menu.add_separator()
+        menu.add_command(label="Credentials…", command=self.open_settings_dialog)
+
         # Display menu at mouse position
         try:
             menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
         finally:
             menu.grab_release()
 
-    def open_config_file(self) -> None:
-        """Open config.json in the default system text editor."""
-        config_path = os.path.abspath("config.json")
-        if not os.path.exists(config_path):
-            messagebox.showerror("Not Found", f"config.json not found at:\n{config_path}")
+    def open_settings_dialog(self) -> None:
+        """Open the credential editor and offer to reconnect after saving."""
+        if not self.config:
+            self.config = load_config()
+
+        SettingsDialog(self.root, self.config, on_saved=self._on_settings_saved)
+
+    def _on_settings_saved(self) -> None:
+        """Refresh host toggles and offer to reconnect with the new values."""
+        self.load_host_settings()
+        self.update_visibility()
+
+        reconnect = messagebox.askyesno(
+            "Settings Saved",
+            "Credentials saved.\n\nReconnect to the file hosts now?",
+        )
+        if not reconnect:
             return
-        os.startfile(config_path)
+
+        # Drop the cached config so initialize_api re-reads the new values.
+        self.config = None
+        self.is_ready = False
+        self.update_status("Reconnecting...")
+        threading.Thread(target=self.initialize_api, daemon=True).start()
 
     def _validate_and_save_host_settings(self) -> None:
         """Validate at least one host is enabled before saving."""
@@ -548,56 +605,8 @@ class DragDropUploader:
             self.log_frame.columnconfigure(col, weight=1)
     
     def parse_apk_filename(self, filename: str) -> Optional[Dict[str, str]]:
-        """
-        Parse APK filename to extract package name and version.
-
-        Parameters
-        ----------
-        filename : str
-            The APK filename to parse (e.g.,
-            'com.app.name-1.0-release.apk' or
-            'com.estrada777.projectmyriam-ch.end.03+p-release.apk').
-
-        Returns
-        -------
-        Optional[Dict[str, str]]
-            Dictionary containing 'package', 'version', 'full_name', and
-            'filename' keys if parsing succeeds, None otherwise.
-        """
-        if not filename.lower().endswith('.apk'):
-            return None
-
-        name_without_ext = filename[:-4]
-
-        if '-' not in name_without_ext:
-            return None
-
-        package, remainder = name_without_ext.split('-', 1)
-
-        if not remainder:
-            return None
-
-        version_tokens = remainder.split('-')
-        suffix_tokens = {'release', 'fix', 'hotfix', 'bugfix', 'patch', 'patched'}
-
-        while version_tokens and version_tokens[-1].lower() in suffix_tokens:
-            version_tokens.pop()
-
-        if not version_tokens:
-            return None
-
-        version = '-'.join(version_tokens).strip()
-        package = package.strip()
-
-        if not package or not version:
-            return None
-
-        return {
-            'package': package,
-            'version': version,
-            'full_name': name_without_ext,
-            'filename': filename
-        }
+        """Parse an APK filename. See apk_naming.parse_apk_filename."""
+        return parse_apk_filename(filename)
 
     def save_folder_cache(self, host: str, root_folder_id: str, folders: Dict) -> None:
         """
@@ -612,69 +621,39 @@ class DragDropUploader:
         folders : Dict
             The folder structure data to cache.
         """
-        cache_path = Path(self.FOLDER_CACHE_FILE)
-        
-        # Load existing cache or create new structure
-        if cache_path.exists():
-            try:
-                with open(cache_path, 'r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
-            except (json.JSONDecodeError, OSError, IOError):
-                cache_data = {}
-        else:
-            cache_data = {}
-        
-        # Update host-specific data
-        cache_data[host] = {
-            'timestamp': datetime.now().isoformat(),
-            'root_folder_id': root_folder_id,
-            'folders': folders
-        }
-        
-        # Save to file
         try:
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, indent=2, ensure_ascii=False)
+            folder_cache.save_host_folders(
+                self.FOLDER_CACHE_FILE, host, root_folder_id, folders
+            )
             self.log(f"Saved {host} cache with {len(folders)} folders", "SUCCESS", host=host)
-        except (OSError, IOError) as e:
+        except folder_cache.FolderCacheError as e:
             self.log(f"Error saving {host} cache: {e}", "ERROR", host=host)
 
     def load_folder_cache(self) -> Optional[Dict]:
         """
         Load cached folder structure.
-        Supports both old single-host and new dual-host formats.
-        Migrates old format to new format automatically.
+
+        Migrates the original single-host format to the multi-host layout.
         """
-        cache_path = Path(self.FOLDER_CACHE_FILE)
-
-        if not cache_path.exists():
-            return None
-
         try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                cache_data = json.load(f)
-
-            # Check if this is old format (has 'timestamp' at root level)
-            if 'timestamp' in cache_data and 'gofile' not in cache_data:
-                self.log("Migrating old cache format to dual-host structure...")
-                # Migrate: wrap old data under 'gofile' key
-                old_data = cache_data.copy()
-                cache_data = {
-                    'gofile': old_data
-                }
-                # Save migrated format
-                try:
-                    with open(cache_path, 'w', encoding='utf-8') as f:
-                        json.dump(cache_data, f, indent=2, ensure_ascii=False)
-                    self.log("Cache migration complete", "SUCCESS")
-                except (OSError, IOError) as e:
-                    self.log(f"Warning: Could not save migrated cache: {e}", "WARNING")
-
-            return cache_data
-
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            self.log(f"Error loading cache: {e}", "ERROR")
+            cache_data = folder_cache.read_cache(self.FOLDER_CACHE_FILE)
+        except folder_cache.FolderCacheError as e:
+            self.log(f"{e}", "ERROR")
             return None
+
+        if cache_data is None:
+            return None
+
+        if folder_cache.needs_migration(cache_data):
+            self.log("Migrating old cache format to multi-host structure...")
+            cache_data = folder_cache.migrate(cache_data)
+            try:
+                folder_cache.write_cache(self.FOLDER_CACHE_FILE, cache_data)
+                self.log("Cache migration complete", "SUCCESS")
+            except folder_cache.FolderCacheError as e:
+                self.log(f"Warning: Could not save migrated cache: {e}", "WARNING")
+
+        return cache_data
 
     def build_folder_structure_for_host(self, host: str, api, root_folder_id: str, folder_structure_dict: Dict) -> None:
         """
@@ -691,34 +670,20 @@ class DragDropUploader:
         folder_structure_dict : Dict
             The dictionary to populate with package -> folder_id mappings.
         """
-        # Check if we have valid cached data for this host
-        if self.cache_data and host in self.cache_data:
-            host_cache = self.cache_data[host]
-            cache_time = datetime.fromisoformat(host_cache.get('timestamp', ''))
-            cache_age = datetime.now() - cache_time
-            
-            # Validate cache
-            if (cache_age <= timedelta(hours=self.CACHE_EXPIRY_HOURS) and
-                host_cache.get('root_folder_id') == root_folder_id):
-                
-                self.log(f"Using cached {host} folder structure", host=host)
-                folders = host_cache.get('folders', {})
-                
-                for folder_id, folder_info in folders.items():
-                    parsed = folder_info.get('parsed', {})
-                    folder_type = parsed.get('type')
-                    
-                    if folder_type == 'parent':
-                        package = parsed.get('package')
-                        if package:
-                            folder_structure_dict[package] = folder_id
-                
-                parent_count = len(folder_structure_dict)
-                self.log(f"Loaded {parent_count} {host} parent folders from cache", "SUCCESS", host=host)
-                return
-        
-        # No valid cache - scan the host
-        self.log(f"No valid {host} cache - scanning folders...", host=host)
+        host_cache, reason = folder_cache.get_valid_host_cache(
+            self.cache_data, host, root_folder_id, self.CACHE_EXPIRY_HOURS
+        )
+
+        if host_cache:
+            self.log(f"Using cached {host} folder structure", host=host)
+            folder_structure_dict.update(
+                folder_cache.extract_parent_folders(host_cache)
+            )
+            parent_count = len(folder_structure_dict)
+            self.log(f"Loaded {parent_count} {host} parent folders from cache", "SUCCESS", host=host)
+            return
+
+        self.log(f"No valid {host} cache ({reason}) - scanning folders...", host=host)
         
         try:
             root_contents = api.get_content(root_folder_id)
@@ -839,20 +804,8 @@ class DragDropUploader:
             return None
 
     def _normalize_version_folder_name(self, folder_name: str) -> str:
-        """
-        Normalize version folder names by removing trailing '-release'.
-
-        Parameters
-        ----------
-        folder_name : str
-            Proposed folder name.
-
-        Returns
-        -------
-        str
-            Normalized folder name without a trailing '-release' token.
-        """
-        return re.sub(r'(?i)-release$', '', folder_name)
+        """Normalize a version folder name. See apk_naming."""
+        return normalize_version_folder_name(folder_name)
 
     def create_version_folder(
         self,
@@ -991,31 +944,106 @@ class DragDropUploader:
         else:  # "⏳"
             indicator = "⟳"
             color = "orange"
-        
+
+        # Reaching a terminal state means this host's transfer is over, so the
+        # progress bar should not linger at whatever percentage it stopped at.
+        if emoji in ("🟢", "🔴"):
+            self._reset_host_progress(host)
+
         if host == "gofile" and self.gofile_status_indicator:
             self.root.after(0, lambda: self.gofile_status_indicator.config(
                 text=indicator, foreground=color))
-            if hasattr(self, 'mini_gofile_indicator'):
-                self.root.after(0, lambda: self.mini_gofile_indicator.config(
-                    text=indicator, foreground=color))
         elif host == "buzzheavier" and self.buzzheavier_status_indicator:
             self.root.after(0, lambda: self.buzzheavier_status_indicator.config(
                 text=indicator, foreground=color))
-            if hasattr(self, 'mini_buzzheavier_indicator'):
-                self.root.after(0, lambda: self.mini_buzzheavier_indicator.config(
-                    text=indicator, foreground=color))
         elif host == "pixeldrain" and self.pixeldrain_status_indicator:
             self.root.after(0, lambda: self.pixeldrain_status_indicator.config(
                 text=indicator, foreground=color))
-            if hasattr(self, 'mini_pixeldrain_indicator'):
-                self.root.after(0, lambda: self.mini_pixeldrain_indicator.config(
-                    text=indicator, foreground=color))
         elif host == "apkadmin" and self.apkadmin_status_indicator:
             self.root.after(0, lambda: self.apkadmin_status_indicator.config(
                 text=indicator, foreground=color))
-            if hasattr(self, 'mini_apkadmin_indicator'):
-                self.root.after(0, lambda: self.mini_apkadmin_indicator.config(
-                    text=indicator, foreground=color))
+
+    def _create_host_progress_bar(self, host: str, parent) -> None:
+        """
+        Add a hidden progress bar beneath a host's status label.
+
+        Lives inside the status frame so update_visibility, which grids that
+        frame as a unit, keeps working unchanged. A percentage label is
+        overlaid on top of the bar via place(), which positions relative to
+        the bar's own geometry without disturbing the grid layout everything
+        else uses.
+        """
+        bar = ttk.Progressbar(parent, orient=tk.HORIZONTAL, mode='determinate',
+                              maximum=100, length=self.PROGRESS_BAR_WIDTH)
+        bar.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(2, 0))
+        bar.grid_remove()
+        self.host_progress_bars[host] = bar
+
+        label = ttk.Label(parent, text="", font=('Arial', 7, 'bold'),
+                          anchor=tk.CENTER)
+        self.host_progress_labels[host] = label
+
+    def _make_progress_callback(self, host: str) -> Callable[[int, Optional[int]], None]:
+        """
+        Build a throttled progress callback for one host's upload.
+
+        The callback runs on the upload thread once per chunk, which is far
+        more often than the display needs. Updates are emitted only when the
+        whole-percent value changes, so a large upload queues about a hundred
+        GUI updates instead of thousands.
+        """
+        last_percent = [-1]
+
+        def report(bytes_sent: int, total_size: Optional[int]) -> None:
+            if not total_size:
+                return
+
+            percent = int(bytes_sent * 100 / total_size)
+            if percent == last_percent[0]:
+                return
+            last_percent[0] = percent
+            self._set_host_progress(host, percent)
+
+        return report
+
+    def _set_host_progress(self, host: str, percent: int) -> None:
+        """Show a host's progress bar at the given percentage, with the
+        percentage overlaid as text centered on the bar."""
+        bar = self.host_progress_bars.get(host)
+        if not bar:
+            return
+        label = self.host_progress_labels.get(host)
+
+        def update():
+            bar.grid()
+            bar['value'] = percent
+            if label:
+                label.config(text=f"{percent}%")
+                # in_=bar tracks the bar's live position/size, so this only
+                # needs to be issued once per show rather than per update.
+                label.place(in_=bar, relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        self._run_on_gui_thread(update)
+
+    def _reset_host_progress(self, host: str) -> None:
+        """Hide a host's progress bar and its percentage label, and zero it."""
+        bar = self.host_progress_bars.get(host)
+        if not bar:
+            return
+        label = self.host_progress_labels.get(host)
+
+        def update():
+            bar['value'] = 0
+            bar.grid_remove()
+            if label:
+                label.place_forget()
+
+        self._run_on_gui_thread(update)
+
+    def _reset_all_progress(self) -> None:
+        """Hide every progress bar, e.g. when clearing or starting a batch."""
+        for host in self.host_progress_bars:
+            self._reset_host_progress(host)
 
     def _open_url_from_event(self, event):
         """Open clicked URL inside a log widget."""
@@ -1035,103 +1063,11 @@ class DragDropUploader:
 
         if start_end:
             url = widget.get(start_end[0], start_end[1]).strip()
-            if url.startswith("http"):
+            # Re-check rather than trusting the tag: the widget text is what
+            # actually gets handed to the browser.
+            if self._is_allowed_link(url):
                 webbrowser.open(url)
-                return "break"
         return "break"
-
-    def _upload_to_gofile(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
-        """
-        Upload file to Gofile.
-        
-        Parameters
-        ----------
-        file_path : str
-            Path to the file
-        package : str
-            Package name
-        version : str
-            Version string
-        full_name : str
-            Full folder name (package-version-suffix)
-            
-        Returns
-        -------
-        Optional[str]
-            Public link if successful, None otherwise
-        """
-        try:
-            # Get or create parent folder
-            parent_id = self.folder_structure.get(package)
-
-            if not parent_id:
-                self.log(f"No parent folder found for {package}", "WARNING", host="gofile")
-                parent_id = self.create_parent_folder(package)
-                if not parent_id:
-                    self.log("Failed to create parent folder", "ERROR", host="gofile")
-                    return None
-            else:
-                self.log(f"Found parent folder: {package}", host="gofile")
-
-            version_folder_name = self._normalize_version_folder_name(full_name)
-
-            # Create or get version folder, honoring legacy names
-            version_id = self.create_version_folder(
-                parent_id,
-                version_folder_name,
-                alt_version_names=[full_name] if full_name != version_folder_name else None
-            )
-            if not version_id:
-                self.log("Failed to create/get version folder", "ERROR", host="gofile")
-                return None
-
-            # Upload file
-            file_size_bytes = os.path.getsize(file_path)
-            file_size_mb = file_size_bytes / (1024 * 1024)
-            self.log(f"Uploading - {round(file_size_mb)} MB...", host="gofile")
-
-            start_time = time.time()
-            self.api.upload_file(file_path, folder_id=version_id)
-            upload_time = time.time() - start_time
-
-            upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
-            self.log(f"Upload complete! - {upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps", "SUCCESS", host="gofile")
-
-            # Make folder public and get link
-            self.log("Making folder public...", host="gofile")
-            if self.make_folder_public(version_id):
-                self.log("Folder is now public", "SUCCESS", host="gofile")
-
-            self.log("Getting public link...", host="gofile")
-            link = self.get_folder_link(version_id)
-
-            if link:
-                self.log("Public link ready", "SUCCESS", host="gofile")
-                self.log(f"Link: {link}", "SUCCESS", host="gofile")
-                # Update link entry immediately (thread-safe GUI update)
-                if self.gofile_link_entry:
-                    self.root.after(0, lambda: self._update_link_entry(self.gofile_link_entry, link))
-                # Update status to success
-                self._update_status_emoji("gofile", "🟢")
-                self.log("-" * 25, host="gofile")
-                return link
-            else:
-                self.log("Could not retrieve public link", "ERROR", host="gofile")
-                self._update_status_emoji("gofile", "🔴")
-                self.log("-" * 25, host="gofile")
-                return None
-
-        except (RuntimeError, KeyError) as e:
-            self.log(f"Upload failed: {e}", "ERROR", host="gofile")
-            self._update_status_emoji("gofile", "🔴")
-            self.log("-" * 25, host="gofile")
-            return None
-        except (OSError, IOError) as e:
-            # File/permission errors that aren't network-related
-            self.log(f"Upload failed: {e}", "ERROR", host="gofile")
-            self._update_status_emoji("gofile", "🔴")
-            self.log("-" * 25, host="gofile")
-            return None
 
     def _find_existing_version_folder(self, parent_id: str, version_folder_name: str, alt_version_names: Optional[List[str]] = None) -> Optional[str]:
         """
@@ -1156,656 +1092,6 @@ class DragDropUploader:
         except (RuntimeError, KeyError, ValueError, OSError, IOError):
             return None
 
-    def _detect_duplicates(self, file_path: str, package: str, full_name: str) -> Dict[str, Dict[str, Optional[str]]]:
-        """
-        Check each enabled host for an already existing file and/or folder.
-
-        Returns a dict per host with keys: {'folder_id', 'file_id'} when found.
-        """
-        filename = os.path.basename(file_path)
-        version_folder_name = self._normalize_version_folder_name(full_name)
-        alt_names = [full_name] if full_name != version_folder_name else None
-
-        results: Dict[str, Dict[str, Optional[str]]] = {}
-
-        # Gofile
-        if self.gofile_enabled and self.gofile_enabled.get() and self.api and self.root_folder_id:
-            folder_id = self.folder_structure.get(package)
-            version_id = None
-            file_id = None
-            if folder_id:
-                version_id = self._find_existing_version_folder(folder_id, version_folder_name, alt_names)
-                if version_id:
-                    try:
-                        contents = self.api.get_content(version_id)
-                        for cid, cdata in contents.get('children', {}).items():
-                            if cdata.get('type') == 'file' and cdata.get('name') == filename:
-                                file_id = cid
-                                break
-                    except (RuntimeError, KeyError, ValueError, OSError, IOError):
-                        pass
-            if version_id or file_id:
-                results['gofile'] = {'folder_id': version_id, 'file_id': file_id}
-
-        # Buzzheavier
-        if self.buzzheavier_enabled and self.buzzheavier_enabled.get() and self.buzzheavier_api and self.buzzheavier_root_folder_id:
-            parent_id = self.buzzheavier_folder_structure.get(package)
-            version_id = None
-            file_id = None
-            try:
-                if parent_id:
-                    parent_contents = self.buzzheavier_api.get_content(parent_id)
-                    children = parent_contents.get('children', [])
-                    # Find existing version folder (normalized or legacy)
-                    candidate_names = [version_folder_name] + ([full_name] if full_name != version_folder_name else [])
-                    version_folder = next((c for c in children if c.get('isDirectory') and c.get('name') in candidate_names), None)
-                    if version_folder:
-                        version_id = version_folder.get('id')
-                        # Check for existing file by name
-                        v_contents = self.buzzheavier_api.get_content(version_id)
-                        v_children = v_contents.get('children', [])
-                        existing_file = next((c for c in v_children if not c.get('isDirectory') and c.get('name') == filename), None)
-                        if existing_file:
-                            file_id = existing_file.get('id')
-                if version_id or file_id:
-                    results['buzzheavier'] = {'folder_id': version_id, 'file_id': file_id}
-            except (RuntimeError, KeyError, ValueError, OSError, IOError):
-                pass
-
-        # Pixeldrain (flat, check by filename in user files)
-        if self.pixeldrain_enabled and self.pixeldrain_enabled.get() and self.pixeldrain_api:
-            try:
-                user_files = self.pixeldrain_api.get_user_files()
-                files = user_files.get('files', [])
-                existing = next((f for f in files if f.get('name') == filename), None)
-                if existing:
-                    results['pixeldrain'] = {'folder_id': None, 'file_id': existing.get('id')}
-            except (RuntimeError, KeyError, ValueError, OSError, IOError):
-                pass
-
-        return results
-
-    def _prompt_duplicate_action(self, hosts: List[str], package: str = "") -> Optional[str]:
-        """
-        Ask user to choose Overwrite (delete then upload), Upload again, or Skip.
-        Returns 'overwrite', 'upload', or 'cancel'.
-        """
-        msg = (
-            f"Package: {package}\n\n"
-            "Duplicates detected on: " + ", ".join([h.capitalize() for h in hosts]) + "\n\n"
-            "Overwrite = Delete then upload\n"
-            "Upload Again = Upload a second copy\n"
-            "Skip = Abort"
-        )
-        
-        root = tk.Tk()
-        root.withdraw()
-        
-        result = [None]
-        
-        def on_overwrite():
-            result[0] = "overwrite"
-            dialog.destroy()
-        
-        def on_upload():
-            result[0] = "upload"
-            dialog.destroy()
-        
-        def on_skip():
-            result[0] = "cancel"
-            dialog.destroy()
-        
-        dialog = tk.Toplevel(root)
-        dialog.title("Duplicates Detected")
-        dialog.geometry("400x200")
-        dialog.resizable(False, False)
-        
-        label = tk.Label(dialog, text=msg, justify=tk.LEFT, wraplength=350, padx=20, pady=20)
-        label.pack()
-        
-        button_frame = tk.Frame(dialog)
-        button_frame.pack(pady=10)
-        
-        tk.Button(button_frame, text="Overwrite", command=on_overwrite, width=12).pack(side=tk.LEFT, padx=5)
-        tk.Button(button_frame, text="Upload Again", command=on_upload, width=12).pack(side=tk.LEFT, padx=5)
-        tk.Button(button_frame, text="Skip", command=on_skip, width=12).pack(side=tk.LEFT, padx=5)
-        
-        root.after(0, dialog.lift)
-        root.after(0, dialog.focus)
-        root.wait_window(dialog)
-        root.destroy()
-        
-        return result[0]
-
-    def _batch_scan_duplicates(self, file_list: List[str]) -> Dict[str, Dict[str, Dict[str, Optional[str]]]]:
-        """
-        Scan multiple files for duplicates across all enabled hosts.
-        
-        Returns dict: {file_path: {host: {'folder_id': ..., 'file_id': ...}}}
-        """
-        duplicates_found = {}
-        total = len(file_list)
-        
-        for idx, file_path in enumerate(file_list, start=1):
-            filename = os.path.basename(file_path)
-            
-            # Update progress dialog on GUI thread
-            if self.root:
-                self.root.after(0, self._update_scan_progress, idx, total, filename)
-            
-            # Parse filename to get package and version info
-            parsed = self.parse_apk_filename(filename)
-            if not parsed:
-                continue
-                
-            package = parsed['package']
-            full_name = parsed['full_name']
-            
-            # Use existing duplicate detection logic
-            try:
-                dups = self._detect_duplicates(file_path, package, full_name)
-                if dups:
-                    duplicates_found[file_path] = dups
-            except Exception as e:  # pylint: disable=broad-except
-                self.log(f"Error checking duplicates for {filename}: {e}", "WARNING", host="general")
-                continue
-        
-        return duplicates_found
-
-    def _show_scan_progress_dialog(self):
-        """Create and show the scanning progress dialog."""
-        if self.scan_progress_window:
-            return
-            
-        self.scan_progress_window = tk.Toplevel(self.root)
-        self.scan_progress_window.title("Scanning for Duplicates")
-        self.scan_progress_window.geometry("450x120")
-        self.scan_progress_window.resizable(False, False)
-        self.scan_progress_window.transient(self.root)
-        
-        frame = tk.Frame(self.scan_progress_window, padx=20, pady=20)
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.scan_status_label = tk.Label(frame, text="Scanning for duplicates...", font=("Arial", 10))
-        self.scan_status_label.pack(pady=(0, 10))
-        
-        self.scan_file_label = tk.Label(frame, text="", font=("Arial", 9), fg="gray")
-        self.scan_file_label.pack()
-
-    def _update_scan_progress(self, current: int, total: int, filename: str):
-        """Update the scan progress dialog."""
-        if not self.scan_progress_window:
-            self._show_scan_progress_dialog()
-        
-        if self.scan_progress_window:
-            self.scan_status_label.config(text=f"Checking file {current} of {total} for duplicates...")
-            self.scan_file_label.config(text=filename)
-
-    def _close_scan_progress_dialog(self):
-        """Close the scanning progress dialog."""
-        if self.scan_progress_window:
-            self.scan_progress_window.destroy()
-            self.scan_progress_window = None
-
-    def _batch_scan_and_prompt(self, file_list: List[str]):
-        """
-        Batch scan files for duplicates and prompt user for decisions.
-        Runs in background thread but signals queue processor to wait.
-        """
-        # scanning_in_progress is already set by _enqueue_files
-        # No need to set it again here
-        
-        # Show progress dialog
-        if self.root:
-            self.root.after(0, self._show_scan_progress_dialog)
-        
-        # Scan all files
-        duplicates_found = self._batch_scan_duplicates(file_list)
-        
-        # Mark all files as scanned
-        for file_path in file_list:
-            self.scanned_files.add(file_path)
-        
-        # Close progress dialog
-        if self.root:
-            self.root.after(0, self._close_scan_progress_dialog)
-        
-        # If duplicates found, schedule dialog on main thread (non-blocking)
-        if duplicates_found:
-            if self.root:
-                # Schedule dialog and pass completion callback
-                self.root.after(0, lambda: self._show_duplicate_decision_dialog_and_continue(duplicates_found))
-        else:
-            self.log(f"No duplicates found for {len(file_list)} file(s)", "INFO", host="general")
-            # Signal that scanning is complete
-            with self.queue_lock:
-                self.scanning_in_progress = False
-                self.scan_complete_event.set()
-
-    def _show_duplicate_decision_dialog_and_continue(self, duplicates_dict: Dict[str, Dict[str, Dict[str, Optional[str]]]]):
-        """
-        Show dialog on main thread and signal completion when done.
-        This runs on the main GUI thread.
-        """
-        if not duplicates_dict:
-            with self.queue_lock:
-                self.scanning_in_progress = False
-                self.scan_complete_event.set()
-            return
-        
-        try:
-            dialog = tk.Toplevel(self.root)
-            dialog.title("Duplicate Files Detected")
-            
-            # Set size and center on screen
-            dialog_width = 700
-            dialog_height = 500
-            screen_width = dialog.winfo_screenwidth()
-            screen_height = dialog.winfo_screenheight()
-            x = (screen_width - dialog_width) // 2
-            y = (screen_height - dialog_height) // 2
-            dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
-            dialog.resizable(True, True)
-            
-            # Make dialog modal
-            dialog.transient(self.root)
-            dialog.grab_set()
-            
-            # Header
-            header = tk.Label(
-                dialog, 
-                text="The following files already exist on one or more hosts.\nChoose an action for each file:",
-                font=("Arial", 10, "bold"),
-                justify=tk.LEFT,
-                padx=10,
-                pady=10
-            )
-            header.pack(anchor=tk.W)
-            
-            # Scrollable frame for file list
-            canvas = tk.Canvas(dialog)
-            scrollbar = tk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
-            scrollable_frame = tk.Frame(canvas)
-            
-            scrollable_frame.bind(
-                "<Configure>",
-                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-            )
-            
-            canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-            canvas.configure(yscrollcommand=scrollbar.set)
-            
-            # Store dropdown variables and widgets for each file
-            file_decisions = {}
-            file_comboboxes = {}
-            
-            # Create row for each duplicate file
-            for file_path, hosts_dict in duplicates_dict.items():
-                filename = os.path.basename(file_path)
-                hosts = [h.capitalize() for h in hosts_dict.keys()]
-                
-                row_frame = tk.Frame(scrollable_frame, relief=tk.RIDGE, borderwidth=1, padx=10, pady=8)
-                row_frame.pack(fill=tk.X, padx=10, pady=5)
-                
-                # File info
-                info_frame = tk.Frame(row_frame)
-                info_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-                
-                name_label = tk.Label(info_frame, text=filename, font=("Arial", 9, "bold"), anchor=tk.W)
-                name_label.pack(anchor=tk.W)
-                
-                hosts_label = tk.Label(info_frame, text=f"Duplicates on: {', '.join(hosts)}", font=("Arial", 8), fg="gray", anchor=tk.W)
-                hosts_label.pack(anchor=tk.W)
-                
-                # Action dropdown
-                action_var = tk.StringVar(value="skip")
-                file_decisions[file_path] = action_var
-                
-                action_menu = ttk.Combobox(
-                    row_frame,
-                    textvariable=action_var,
-                    values=["skip", "overwrite", "upload_again"],
-                    state="readonly",
-                    width=15
-                )
-                action_menu.pack(side=tk.RIGHT, padx=5)
-                file_comboboxes[file_path] = action_menu
-            
-            canvas.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
-            scrollbar.pack(side="right", fill="y", pady=10, padx=(0, 10))
-            
-            # Button frame
-            button_frame = tk.Frame(dialog)
-            button_frame.pack(pady=10)
-            
-            def apply_to_all(action: str):
-                """Apply the same action to all files."""
-                for file_path in file_decisions.keys():
-                    file_decisions[file_path].set(action)
-                    file_comboboxes[file_path].current(["skip", "overwrite", "upload_again"].index(action))
-                dialog.update_idletasks()
-            
-            def on_confirm():
-                """Store decisions, close dialog, and signal completion."""
-                for file_path, var in file_decisions.items():
-                    action = var.get()
-                    # Store decision for each host that has duplicates
-                    self.duplicate_decisions[file_path] = {}
-                    for host in duplicates_dict[file_path].keys():
-                        self.duplicate_decisions[file_path][host] = action
-                
-                self.log(f"Duplicate decisions recorded for {len(file_decisions)} file(s)", "INFO", host="general")
-                dialog.destroy()
-                
-                # Signal that scanning is complete and decisions are made
-                with self.queue_lock:
-                    self.scanning_in_progress = False
-                    self.scan_complete_event.set()
-            
-            def on_cancel():
-                """Cancel upload, clear queue, and reset to ready state."""
-                with self.queue_lock:
-                    queue_size = len(self.upload_queue)
-                    self.upload_queue.clear()
-                    self.duplicate_decisions.clear()
-                    self.scanned_files.clear()
-                    self.scanning_in_progress = False
-                    self.scan_complete_event.set()
-                
-                self.log(f"Upload cancelled, cleared {queue_size} file(s) from queue", "INFO", host="general")
-                self.update_status("Ready - Drop APK file here")
-                dialog.destroy()
-            
-            # Apply to All buttons (vertical stack)
-            apply_frame = tk.LabelFrame(button_frame, text="Apply to All", padx=15, pady=10)
-            apply_frame.pack(pady=5)
-            
-            tk.Button(apply_frame, text="Skip All", command=lambda: apply_to_all("skip"), width=20).pack(pady=3)
-            tk.Button(apply_frame, text="Overwrite All", command=lambda: apply_to_all("overwrite"), width=20).pack(pady=3)
-            tk.Button(apply_frame, text="Upload All Again", command=lambda: apply_to_all("upload_again"), width=20).pack(pady=3)
-            
-            # Confirm and Cancel buttons
-            tk.Button(button_frame, text="Confirm Choices", command=on_confirm, width=20, bg="lightblue", font=("Arial", 10, "bold")).pack(pady=5)
-            tk.Button(button_frame, text="Cancel", command=on_cancel, width=20, bg="lightcoral", font=("Arial", 10, "bold")).pack(pady=5)
-            
-            dialog.protocol("WM_DELETE_WINDOW", on_cancel)
-            dialog.lift()
-            dialog.focus_force()
-            
-        except Exception as e:  # pylint: disable=broad-except
-            self.log(f"Error showing duplicate dialog: {e}", "ERROR", host="general")
-            # Ensure we signal completion even if dialog fails
-            with self.queue_lock:
-                self.scanning_in_progress = False
-                self.scan_complete_event.set()
-
-    def _upload_to_buzzheavier(self, file_path: str, package: str, _version: str, full_name: str) -> Optional[str]:
-        """
-        Upload file to Buzzheavier.
-        
-        Parameters
-        ----------
-        file_path : str
-            Path to the file
-        package : str
-            Package name
-        version : str
-            Version string
-        full_name : str
-            Full folder name (package-version-suffix)
-            
-        Returns
-        -------
-        Optional[str]
-            Public link if successful, None otherwise
-        """
-        try:
-            # Get or create parent folder
-            parent_id = self.buzzheavier_folder_structure.get(package)
-
-            if not parent_id:
-                reused_existing = False
-                self.log(f"Creating parent folder: {package}", host="buzzheavier")
-                try:
-                    result = self.buzzheavier_api.create_folder(self.buzzheavier_root_folder_id, package)
-                    parent_id = result.get('id')
-                except BuzzheavierHTTPError as e:
-                    if "409" in str(e) or "Conflict" in str(e):
-                        self.log("Parent folder already exists; reusing it", "WARNING", host="buzzheavier")
-                        root_content = self.buzzheavier_api.get_content(self.buzzheavier_root_folder_id)
-                        children = root_content.get('children', [])
-                        existing = next((c for c in children if c.get('isDirectory') and c.get('name') == package), None)
-                        parent_id = existing.get('id') if existing else None
-                        reused_existing = parent_id is not None
-                    else:
-                        raise
-
-                if parent_id:
-                    self.buzzheavier_folder_structure[package] = parent_id
-                    if reused_existing:
-                        self.log("Using existing parent folder", "SUCCESS", host="buzzheavier")
-                    else:
-                        self.log("Created parent folder", "SUCCESS", host="buzzheavier")
-                else:
-                    self.log("Failed to create parent folder", "ERROR", host="buzzheavier")
-                    return None
-            else:
-                self.log(f"Found parent folder: {package}", host="buzzheavier")
-
-            version_folder_name = self._normalize_version_folder_name(full_name)
-            candidate_names = [version_folder_name]
-            if full_name != version_folder_name:
-                candidate_names.append(full_name)
-
-            # Check if version folder exists (prefer normalized, but allow legacy)
-            parent_contents = self.buzzheavier_api.get_content(parent_id)
-            children = parent_contents.get('children', [])
-            version_folder = next(
-                (
-                    c for c in children
-                    if c.get('isDirectory') and c.get('name') in candidate_names
-                ),
-                None
-            )
-
-            if version_folder:
-                version_id = version_folder.get('id')
-                self.log(f"Version folder already exists: {version_folder_name}", host="buzzheavier")
-            else:
-                self.log(f"Creating version folder: {version_folder_name}", host="buzzheavier")
-                result = self.buzzheavier_api.create_folder(parent_id, version_folder_name)
-                version_id = result.get('id')
-                if not version_id:
-                    self.log("Failed to create version folder", "ERROR", host="buzzheavier")
-                    return None
-
-            # Upload file
-            file_size_bytes = os.path.getsize(file_path)
-            file_size_mb = file_size_bytes / (1024 * 1024)
-            self.log(f"Uploading - {round(file_size_mb)} MB...", host="buzzheavier")
-
-            start_time = time.time()
-            result = self.buzzheavier_api.upload_file(file_path, parent_id=version_id)
-            upload_time = time.time() - start_time
-
-            upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
-            self.log(f"Upload complete! - {upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps", "SUCCESS", host="buzzheavier")
-
-            # Get file ID and generate public link
-            file_id = result.get('id')
-            if file_id:
-                link = f"https://buzzheavier.com/{file_id}"
-                self.log("Public link ready", "SUCCESS", host="buzzheavier")
-                self.log(f"Link: {link}", "SUCCESS", host="buzzheavier")
-                # Update link entry immediately (thread-safe GUI update)
-                if self.buzzheavier_link_entry:
-                    self.root.after(0, lambda: self._update_link_entry(self.buzzheavier_link_entry, link))
-                # Update status to success
-                self._update_status_emoji("buzzheavier", "🟢")
-                self.log("-" * 25, host="buzzheavier")
-                return link
-            else:
-                self.log("Could not get file ID", "ERROR", host="buzzheavier")
-                self._update_status_emoji("buzzheavier", "🔴")
-                self.log("-" * 25, host="buzzheavier")
-                return None
-
-        except NetworkException as e:
-            # Network errors after all retries exhausted
-            self.log(f"Upload failed after retries: {e}", "ERROR", host="buzzheavier")
-            self._update_status_emoji("buzzheavier", "🔴")
-            self.log("-" * 25, host="buzzheavier")
-            return None
-        except (RuntimeError, KeyError) as e:
-            self.log(f"Upload failed: {e}", "ERROR", host="buzzheavier")
-            self._update_status_emoji("buzzheavier", "🔴")
-            self.log("-" * 25, host="buzzheavier")
-            return None
-        except (OSError, IOError) as e:
-            # File/permission errors that aren't network-related
-            self.log(f"Upload failed: {e}", "ERROR", host="buzzheavier")
-            self._update_status_emoji("buzzheavier", "🔴")
-            self.log("-" * 25, host="buzzheavier")
-            return None
-    
-    def _upload_to_pixeldrain(self, file_path: str, _package: str, _version: str, _full_name: str) -> Optional[str]:
-        """
-        Upload file to Pixeldrain (flat structure).
-        
-        Parameters
-        ----------
-        file_path : str
-            Path to the file
-        _package : str
-            Package name (unused - for future list organization)
-        _version : str
-            Version string (unused - for future list organization)
-        _full_name : str
-            Full folder name (unused - for future list organization)
-            
-        Returns
-        -------
-        Optional[str]
-            Public link if successful, None otherwise
-        """
-        try:
-            file_size_bytes = os.path.getsize(file_path)
-            file_size_mb = file_size_bytes / (1024 * 1024)
-            self.log(f"Uploading - {round(file_size_mb)} MB...", host="pixeldrain")
-
-            start_time = time.time()
-            result = self.pixeldrain_api.upload_file(file_path)
-            upload_time = time.time() - start_time
-
-            upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
-            self.log(f"Upload complete! - {upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps", "SUCCESS", host="pixeldrain")
-            
-            # Get file ID and generate public link
-            file_id = result.get('id')
-            if file_id:
-                link = f"https://pixeldrain.com/u/{file_id}"
-                self.log("Public link ready", "SUCCESS", host="pixeldrain")
-                self.log(f"Link: {link}", "SUCCESS", host="pixeldrain")
-                # Update link entry immediately (thread-safe GUI update)
-                if self.pixeldrain_link_entry:
-                    self.root.after(0, lambda: self._update_link_entry(self.pixeldrain_link_entry, link))
-                # Update status to success
-                self._update_status_emoji("pixeldrain", "🟢")
-                self.log("-" * 25, host="pixeldrain")
-                return link
-            else:
-                self.log("Could not get file ID", "ERROR", host="pixeldrain")
-                self._update_status_emoji("pixeldrain", "🔴")
-                self.log("-" * 25, host="pixeldrain")
-                return None
-
-        except NetworkException as e:
-            self.log(f"Network error: {e}", "ERROR", host="pixeldrain")
-            self._update_status_emoji("pixeldrain", "🔴")
-            self.log("-" * 25, host="pixeldrain")
-            return None
-        except (OSError, IOError) as e:
-            self.log(f"File error: {e}", "ERROR", host="pixeldrain")
-            self._update_status_emoji("pixeldrain", "🔴")
-            self.log("-" * 25, host="pixeldrain")
-            return None
-        except Exception as e:  # pylint: disable=broad-except
-            self.log(f"Unexpected error: {e}", "ERROR", host="pixeldrain")
-            self._update_status_emoji("pixeldrain", "🔴")
-            return None
-
-    def _upload_to_apkadmin(self, file_path: str, _package: str, _version: str, _full_name: str) -> Optional[str]:
-        """
-        Upload file to Apkadmin (flat structure, no folder organization).
-
-        Parameters
-        ----------
-        file_path : str
-            Path to the file
-        _package : str
-            Unused — Apkadmin has no folder API
-        _version : str
-            Unused — Apkadmin has no folder API
-        _full_name : str
-            Unused — Apkadmin has no folder API
-
-        Returns
-        -------
-        Optional[str]
-            Public link if successful, None otherwise
-        """
-        try:
-            file_size_bytes = os.path.getsize(file_path)
-            file_size_mb = file_size_bytes / (1024 * 1024)
-            self.log(f"Uploading - {round(file_size_mb)} MB...", host="apkadmin")
-
-            start_time = time.time()
-            result = self.apkadmin_api.upload_file(file_path)
-            upload_time = time.time() - start_time
-
-            upload_speed_mbps = (file_size_bytes * 8) / (upload_time * 1_000_000)
-            self.log(f"Upload complete! - {upload_time:.1f}s, {upload_speed_mbps:.2f} Mbps", "SUCCESS", host="apkadmin")
-
-            link = result.get("url")
-            if link:
-                self.log("Public link ready", "SUCCESS", host="apkadmin")
-                self.log(f"Link: {link}", "SUCCESS", host="apkadmin")
-                if self.apkadmin_link_entry:
-                    self.root.after(0, lambda: self._update_link_entry(self.apkadmin_link_entry, link))
-                self._update_status_emoji("apkadmin", "🟢")
-                self.log("-" * 25, host="apkadmin")
-                return link
-            else:
-                self.log("Could not get file URL from response", "ERROR", host="apkadmin")
-                self._update_status_emoji("apkadmin", "🔴")
-                self.log("-" * 25, host="apkadmin")
-                return None
-
-        except ApkadminAuthError as e:
-            self.log(f"Auth error: {e}", "ERROR", host="apkadmin")
-            self._update_status_emoji("apkadmin", "🔴")
-            self.log("-" * 25, host="apkadmin")
-            return None
-        except ApkadminNetworkException as e:
-            self.log(f"Network error: {e}", "ERROR", host="apkadmin")
-            self._update_status_emoji("apkadmin", "🔴")
-            self.log("-" * 25, host="apkadmin")
-            return None
-        except ApkadminAPIError as e:
-            self.log(f"Upload failed: {e}", "ERROR", host="apkadmin")
-            self._update_status_emoji("apkadmin", "🔴")
-            self.log("-" * 25, host="apkadmin")
-            return None
-        except (OSError, IOError) as e:
-            self.log(f"File error: {e}", "ERROR", host="apkadmin")
-            self._update_status_emoji("apkadmin", "🔴")
-            self.log("-" * 25, host="apkadmin")
-            return None
-        except Exception as e:  # pylint: disable=broad-except
-            self.log(f"Unexpected error: {e}", "ERROR", host="apkadmin")
-            self._update_status_emoji("apkadmin", "🔴")
-            return None
-
     def upload_file(self, file_path: str) -> None:
         """
         Upload an APK file to all enabled hosts in parallel.
@@ -1827,15 +1113,7 @@ class DragDropUploader:
             "apkadmin": None,
         }
 
-        # Clear all link entries
-        if self.gofile_link_entry:
-            self.gofile_link_entry.delete(0, tk.END)
-        if self.buzzheavier_link_entry:
-            self.buzzheavier_link_entry.delete(0, tk.END)
-        if self.pixeldrain_link_entry:
-            self.pixeldrain_link_entry.delete(0, tk.END)
-        if self.apkadmin_link_entry:
-            self.apkadmin_link_entry.delete(0, tk.END)
+        self._clear_link_entries()
 
         try:
             file_path = file_path.strip()
@@ -2162,16 +1440,6 @@ class DragDropUploader:
         if not was_processing:
             self._start_queue_worker()
 
-    def _clear_duplicate_state(self):
-        """Clear duplicate checking state after queue completes."""
-        with self.queue_lock:
-            self.duplicate_decisions.clear()
-            self.scanned_files.clear()
-            # Reset scanning state in case it's stuck
-            self.scanning_in_progress = False
-            self.scan_complete_event.set()
-        self.log("Duplicate state cleared", "INFO", host="general")
-
     def _process_upload_queue(self) -> None:
         """Drain the upload queue one file at a time."""
         batch_cleared = False
@@ -2231,136 +1499,6 @@ class DragDropUploader:
         if files:
             self._enqueue_files(list(files))
 
-    def _initialize_gofile(self) -> bool:
-        """
-        Initialize Gofile API connection.
-        
-        Returns
-        -------
-        bool
-            True if initialization successful, False otherwise
-        """
-        try:
-            self.log("Connecting to Gofile...", host="gofile")
-            self.api = GofileAPI(api_token=self.config.api_token)
-
-            account_details = self.api.get_account_details(self.config.account_id)
-            self.root_folder_id = account_details.get('rootFolder')
-
-            email = account_details.get('email')
-            tier = account_details.get('tier')
-
-            self.log("Connected to Gofile account", "SUCCESS", host="gofile")
-            self.log(f"Email: {email}", host="gofile")
-            self.log(f"Tier: {tier}", host="gofile")
-
-            return True
-
-        except (RuntimeError, KeyError, ValueError) as e:
-            self.log(f"Failed to connect to Gofile: {e}", "ERROR", host="gofile")
-            return False
-
-    def _initialize_buzzheavier(self) -> bool:
-        """
-        Initialize Buzzheavier API connection.
-        
-        Returns
-        -------
-        bool
-            True if initialization successful, False otherwise
-        """
-        try:
-            self.log("Connecting to Buzzheavier...", host="buzzheavier")
-            self.buzzheavier_api = BuzzheavierAPI(
-                account_id=self.config.buzzheavier_account_id,
-                preferred_location=BuzzheavierAPI.LOCATION_EASTERN_US
-            )
-
-            account_details = self.buzzheavier_api.get_account_details()
-            
-            # Get root directory
-            root_content = self.buzzheavier_api.get_content()
-            self.buzzheavier_root_folder_id = root_content.get('id')
-
-            created_at = account_details.get('createdAt', 'Unknown')
-            locations = account_details.get('locations', [])
-            location_names = ', '.join([loc.get('name', '') for loc in locations])
-
-            self.log("Connected to Buzzheavier account", "SUCCESS", host="buzzheavier")
-            self.log(f"Account created: {created_at}", host="buzzheavier")
-            self.log(f"Available locations: {location_names}", host="buzzheavier")
-
-            return True
-
-        except (RuntimeError, KeyError, ValueError) as e:
-            self.log(f"Failed to connect to Buzzheavier: {e}", "ERROR", host="buzzheavier")
-            return False
-    
-    def _initialize_pixeldrain(self) -> bool:
-        """
-        Initialize Pixeldrain API connection.
-        
-        Returns
-        -------
-        bool
-            True if initialization successful, False otherwise
-        """
-        try:
-            self.log("Connecting to Pixeldrain...", host="pixeldrain")
-            from pixeldrain_api import PixeldrainAPI
-            
-            self.pixeldrain_api = PixeldrainAPI(api_key=self.config.pixeldrain_api_key)
-
-            # Get user files to verify connection
-            user_data = self.pixeldrain_api.get_user_files()
-            
-            file_count = len(user_data.get('files', []))
-            self.log("Connected to Pixeldrain account", "SUCCESS", host="pixeldrain")
-            self.log(f"Files in account: {file_count}", host="pixeldrain")
-
-            return True
-
-        except NetworkException as e:
-            self.log(f"Network error connecting to Pixeldrain: {e}", "ERROR", host="pixeldrain")
-            return False
-        except Exception as e:  # pylint: disable=broad-except
-            self.log(f"Unexpected error connecting to Pixeldrain: {e}", "ERROR", host="pixeldrain")
-            return False
-
-    def _initialize_apkadmin(self) -> bool:
-        """
-        Initialize Apkadmin session using browser cookies.
-
-        Returns
-        -------
-        bool
-            True if initialization successful, False otherwise
-        """
-        try:
-            self.log("Connecting to Apkadmin...", host="apkadmin")
-
-            self.apkadmin_api = ApkadminAPI(
-                cf_clearance=self.config.apkadmin_cf_clearance,
-                xfss=self.config.apkadmin_xfss,
-                user_agent=self.config.apkadmin_user_agent,
-            )
-            self.apkadmin_api.verify_connection()
-            self.log("Connected to Apkadmin", "SUCCESS", host="apkadmin")
-            return True
-
-        except ApkadminAuthError as e:
-            self.log(f"Auth error: {e}", "ERROR", host="apkadmin")
-            return False
-        except ApkadminNetworkException as e:
-            self.log(f"Network error connecting to Apkadmin: {e}", "ERROR", host="apkadmin")
-            return False
-        except (ValueError, KeyError) as e:
-            self.log(f"Config error for Apkadmin: {e}", "ERROR", host="apkadmin")
-            return False
-        except Exception as e:  # pylint: disable=broad-except
-            self.log(f"Unexpected error connecting to Apkadmin: {e}", "ERROR", host="apkadmin")
-            return False
-
     def initialize_api(self) -> None:
         """Initialize API connections for all hosts in parallel."""
         try:
@@ -2406,14 +1544,16 @@ class DragDropUploader:
                 self.log("=" * 50)
             else:
                 self.update_status("Error - Check credentials")
-                messagebox.showerror("Connection Error", 
-                                   "Failed to connect to all file hosts.\n\n"
-                                   "Check your config.json file.")
+                self._run_on_gui_thread(lambda: messagebox.showerror(
+                    "Connection Error",
+                    "Failed to connect to all file hosts.\n\n"
+                    "Check your config.json file."))
 
         except (RuntimeError, KeyError, ValueError, OSError, IOError) as e:
             self.log(f"Initialization error: {e}", "ERROR")
             self.update_status("Error - Check credentials")
-            messagebox.showerror("Connection Error", f"Failed to initialize:\n{e}")
+            self._run_on_gui_thread(lambda: messagebox.showerror(
+                "Connection Error", f"Failed to initialize:\n{e}"))
 
     def copy_link(self, host: str = "gofile") -> None:
         """
@@ -2457,17 +1597,33 @@ class DragDropUploader:
                 self.root.clipboard_clear()
                 self.root.clipboard_append(file_size)
 
+    def _clear_link_entries(self) -> None:
+        """Blank every public-link entry. Safe to call from any thread."""
+        entries = [
+            self.gofile_link_entry,
+            self.buzzheavier_link_entry,
+            self.pixeldrain_link_entry,
+            self.apkadmin_link_entry,
+        ]
+        present = [e for e in entries if e]
+        if present:
+            self._run_on_gui_thread(
+                lambda: [e.delete(0, tk.END) for e in present]
+            )
+
     def update_file_info(self, file_path: str) -> None:
         """Update file info display with current file name and size."""
         if not self.file_name_label or not self.file_size_label:
             return
-        
+
         file_name = os.path.basename(file_path)
         file_size_bytes = os.path.getsize(file_path)
         file_size_mb = round(file_size_bytes / (1024 * 1024))
-        
-        self.file_name_label.config(text=file_name)
-        self.file_size_label.config(text=f"{file_size_mb} MB")
+
+        self._run_on_gui_thread(lambda: (
+            self.file_name_label.config(text=file_name),
+            self.file_size_label.config(text=f"{file_size_mb} MB"),
+        ))
 
     def copy_all_links(self) -> None:
         """
@@ -2507,6 +1663,7 @@ class DragDropUploader:
 
     def clear_all(self) -> None:
         """Clear all public links and reset logs."""
+        self._reset_all_progress()
         if self.gofile_link_entry:
             self.gofile_link_entry.delete(0, tk.END)
         if self.buzzheavier_link_entry:
@@ -2575,184 +1732,10 @@ class DragDropUploader:
             webbrowser.open(link)
             self.log(f"Opened {host.capitalize()} link in browser", host=host)
 
-    def retry_gofile(self) -> None:
-        """Retry upload to Gofile for the last uploaded file."""
-        if not self.last_upload_file_path or not self.last_upload_parsed_info:
-            self.log("No previous upload to retry", "WARNING", host="gofile")
-            return
-
-        status = self.last_upload_status.get("gofile")
-        if status is True:
-            self.log("Last Gofile upload succeeded; nothing to retry", "INFO", host="gofile")
-            return
-        if status is None:
-            self.log("Gofile upload was skipped; nothing to retry", "INFO", host="gofile")
-            return
-
-        if not self.api or not self.root_folder_id:
-            self.log("Gofile not initialized", "ERROR", host="gofile")
-            return
-
-        self.log("Retrying Gofile upload...", "INFO", host="gofile")
-        
-        # Clear entry and reset status
-        if self.gofile_link_entry:
-            self.gofile_link_entry.delete(0, tk.END)
-        self._update_status_emoji("gofile", "⏳")
-
-        parsed = self.last_upload_parsed_info
-        
-        def retry_thread():
-            link = self._upload_to_gofile(
-                self.last_upload_file_path,
-                parsed['package'],
-                parsed['version'],
-                parsed['full_name']
-            )
-            if not link:
-                self.log("Retry failed", "ERROR", host="gofile")
-
-        thread = threading.Thread(target=retry_thread, daemon=True)
-        thread.start()
-
-    def retry_buzzheavier(self) -> None:
-        """Retry upload to Buzzheavier for the last uploaded file."""
-        if not self.last_upload_file_path or not self.last_upload_parsed_info:
-            self.log("No previous upload to retry", "WARNING", host="buzzheavier")
-            return
-
-        status = self.last_upload_status.get("buzzheavier")
-        if status is True:
-            self.log("Last Buzzheavier upload succeeded; nothing to retry", "INFO", host="buzzheavier")
-            return
-        if status is None:
-            self.log("Buzzheavier upload was skipped; nothing to retry", "INFO", host="buzzheavier")
-            return
-
-        if not self.buzzheavier_api or not self.buzzheavier_root_folder_id:
-            self.log("Buzzheavier not initialized", "ERROR", host="buzzheavier")
-            return
-
-        self.log("Retrying Buzzheavier upload...", "INFO", host="buzzheavier")
-        
-        # Clear entry and reset status
-        if self.buzzheavier_link_entry:
-            self.buzzheavier_link_entry.delete(0, tk.END)
-        self._update_status_emoji("buzzheavier", "⏳")
-
-        parsed = self.last_upload_parsed_info
-        
-        def retry_thread():
-            link = self._upload_to_buzzheavier(
-                self.last_upload_file_path,
-                parsed['package'],
-                parsed['version'],
-                parsed['full_name']
-            )
-            if not link:
-                self.log("Retry failed", "ERROR", host="buzzheavier")
-
-        thread = threading.Thread(target=retry_thread, daemon=True)
-        thread.start()
-    
-    def retry_pixeldrain(self) -> None:
-        """Retry upload to Pixeldrain for the last uploaded file."""
-        if not self.last_upload_file_path or not self.last_upload_parsed_info:
-            self.log("No previous upload to retry", "WARNING", host="pixeldrain")
-            return
-
-        status = self.last_upload_status.get("pixeldrain")
-        if status is True:
-            self.log("Last Pixeldrain upload succeeded; nothing to retry", "INFO", host="pixeldrain")
-            return
-        if status is None:
-            self.log("Pixeldrain upload was skipped; nothing to retry", "INFO", host="pixeldrain")
-            return
-
-        if not self.pixeldrain_api:
-            self.log("Pixeldrain not initialized", "ERROR", host="pixeldrain")
-            return
-
-        self.log("Retrying Pixeldrain upload...", "INFO", host="pixeldrain")
-        
-        # Clear entry and reset status
-        if self.pixeldrain_link_entry:
-            self.pixeldrain_link_entry.delete(0, tk.END)
-        self._update_status_emoji("pixeldrain", "⏳")
-
-        parsed = self.last_upload_parsed_info
-        
-        def retry_thread():
-            link = self._upload_to_pixeldrain(
-                self.last_upload_file_path,
-                parsed['package'],
-                parsed['version'],
-                parsed['full_name']
-            )
-            if not link:
-                self.log("Retry failed", "ERROR", host="pixeldrain")
-
-        thread = threading.Thread(target=retry_thread, daemon=True)
-        thread.start()
-
-    def retry_apkadmin(self) -> None:
-        """Retry upload to Apkadmin for the last uploaded file."""
-        if not self.last_upload_file_path or not self.last_upload_parsed_info:
-            self.log("No previous upload to retry", "WARNING", host="apkadmin")
-            return
-
-        status = self.last_upload_status.get("apkadmin")
-        if status is True:
-            self.log("Last Apkadmin upload succeeded; nothing to retry", "INFO", host="apkadmin")
-            return
-        if status is None:
-            self.log("Apkadmin upload was skipped; nothing to retry", "INFO", host="apkadmin")
-            return
-
-        if not self.apkadmin_api:
-            self.log("Apkadmin not initialized", "ERROR", host="apkadmin")
-            return
-
-        self.log("Retrying Apkadmin upload...", "INFO", host="apkadmin")
-
-        if self.apkadmin_link_entry:
-            self.apkadmin_link_entry.delete(0, tk.END)
-        self._update_status_emoji("apkadmin", "⏳")
-
-        parsed = self.last_upload_parsed_info
-
-        def retry_thread():
-            link = self._upload_to_apkadmin(
-                self.last_upload_file_path,
-                parsed['package'],
-                parsed['version'],
-                parsed['full_name']
-            )
-            if not link:
-                self.log("Retry failed", "ERROR", host="apkadmin")
-
-        thread = threading.Thread(target=retry_thread, daemon=True)
-        thread.start()
-
     def register_drop_target(self, widget, dnd_files_constant) -> None:
         """Register a widget as a drag-and-drop target."""
         widget.drop_target_register(dnd_files_constant)
         widget.dnd_bind('<<Drop>>', self.on_drop)
-
-    def toggle_mini_mode(self) -> None:
-        """Toggle between normal and mini mode."""
-        if self.mini_mode.get():
-            # Switch to mini mode
-            self.main_frame.grid_remove()
-            self.mini_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-            self.root.geometry(f"{self.MINI_MODE_WIDTH}x{self.MINI_MODE_HEIGHT}")
-            self.root.attributes('-topmost', True)
-        else:
-            # Switch to normal mode
-            self.mini_frame.grid_remove()
-            self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-            self.root.geometry(f"{self.NORMAL_MODE_WIDTH}x{self.NORMAL_MODE_HEIGHT}")
-            self.root.attributes('-topmost', False)
 
     def run(self) -> None:
         """Run the application."""
@@ -2762,7 +1745,7 @@ class DragDropUploader:
             # Recreate root with DnD support
             self.root = TkinterDnD.Tk()
             self.root.title("Gofile Drag & Drop Uploader")
-            self.root.geometry(f"{self.NORMAL_MODE_WIDTH}x{self.NORMAL_MODE_HEIGHT}")
+            self.root.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}")
 
             # Set AppUserModelID for consistent taskbar icon (Windows only)
             try:
@@ -2780,9 +1763,6 @@ class DragDropUploader:
                 self.root.iconbitmap(default=icon_path)
             except tk.TclError:
                 pass
-
-            # Create mini mode variable after root window
-            self.mini_mode = tk.BooleanVar(value=False)
 
             # Style
             style = ttk.Style()
@@ -2825,15 +1805,6 @@ class DragDropUploader:
             )
             self.status_label.grid(row=1, column=0)
 
-            # Mini mode checkbox
-            mini_check = ttk.Checkbutton(
-                self.drop_frame,
-                text="Mini Mode (Always on Top)",
-                variable=self.mini_mode,
-                command=self.toggle_mini_mode
-            )
-            mini_check.grid(row=2, column=0, pady=(10, 0))
-
             # Make drop zone clickable
             self.drop_frame.bind("<Button-1>", lambda e: self.browse_file())
             drop_label.bind("<Button-1>", lambda e: self.browse_file())
@@ -2868,10 +1839,10 @@ class DragDropUploader:
             settings_btn.grid(row=0, column=4, sticky=tk.E, padx=(5, 0))
             Tooltip(settings_btn, "Select Hosts")
 
-            config_btn = ttk.Button(link_header_frame, text="📝", width=3,
-                                    command=self.open_config_file)
-            config_btn.grid(row=0, column=5, sticky=tk.E, padx=(5, 0))
-            Tooltip(config_btn, "Open config.json")
+            credentials_btn = ttk.Button(link_header_frame, text="🔑", width=3,
+                                        command=self.open_settings_dialog)
+            credentials_btn.grid(row=0, column=5, sticky=tk.E, padx=(5, 0))
+            Tooltip(credentials_btn, "Edit credentials & settings")
             
             self.link_frame = ttk.Frame(self.main_frame, padding="10")
             self.link_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
@@ -2888,9 +1859,10 @@ class DragDropUploader:
                                                       font=('Arial', 9, 'bold'), foreground="orange")
             self.gofile_status_indicator.grid(row=0, column=0)
             
-            self.gofile_status_label = ttk.Label(gofile_status_frame, text=" Gofile:", 
+            self.gofile_status_label = ttk.Label(gofile_status_frame, text=" Gofile:",
                                                   font=('Arial', 9, 'bold'))
             self.gofile_status_label.grid(row=0, column=1)
+            self._create_host_progress_bar('gofile', gofile_status_frame)
             
             self.gofile_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.gofile_link_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
@@ -2926,7 +1898,8 @@ class DragDropUploader:
             self.buzzheavier_status_label = ttk.Label(buzzheavier_status_frame, text=" Buzzheavier:", 
                                                         font=('Arial', 9, 'bold'))
             self.buzzheavier_status_label.grid(row=0, column=1)
-            
+            self._create_host_progress_bar('buzzheavier', buzzheavier_status_frame)
+
             self.buzzheavier_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.buzzheavier_link_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
 
@@ -2960,7 +1933,8 @@ class DragDropUploader:
             self.pixeldrain_status_label = ttk.Label(pixeldrain_status_frame, text=" Pixeldrain:", 
                                                        font=('Arial', 9, 'bold'))
             self.pixeldrain_status_label.grid(row=0, column=1)
-            
+            self._create_host_progress_bar('pixeldrain', pixeldrain_status_frame)
+
             self.pixeldrain_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.pixeldrain_link_entry.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
 
@@ -2996,6 +1970,7 @@ class DragDropUploader:
             self.apkadmin_status_label.grid(row=0, column=1)
             Tooltip(self.apkadmin_status_label,
                     "Scraping-based host. Requires manual cookie refresh from browser. See docs/APKADMIN_SETUP.md")
+            self._create_host_progress_bar('apkadmin', apkadmin_status_frame)
 
             self.apkadmin_link_entry = ttk.Entry(self.link_frame, font=('Arial', 9))
             self.apkadmin_link_entry.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
@@ -3131,120 +2106,8 @@ class DragDropUploader:
             self.general_log_text.tag_config("success", foreground="green")
             self.general_log_text.tag_config("error", foreground="red")
 
-            # ===== MINI FRAME (Mini Mode) =====
-            self.mini_frame = ttk.Frame(self.root, padding="10")
-            self.mini_frame.columnconfigure(0, weight=1)
-
-            # Mini drop zone
-            mini_drop_frame = ttk.LabelFrame(self.mini_frame, text="", padding="15")
-            mini_drop_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-            mini_drop_frame.columnconfigure(0, weight=1)
-
-            # Drop APK Here label (centered)
-            drop_here_label = ttk.Label(mini_drop_frame, text="Drop APK Here",
-                                       font=('Arial', 9, 'bold'),
-                                       anchor=tk.CENTER)
-            drop_here_label.grid(row=0, column=0)
-
-            mini_drop_label = ttk.Label(mini_drop_frame, text="📁",
-                                       font=('Arial', 24),
-                                       anchor=tk.CENTER)
-            mini_drop_label.grid(row=1, column=0, pady=5)
-
-            # Mini status
-            self.mini_status_label = ttk.Label(
-                mini_drop_frame,
-                text="Ready",
-                font=('Arial', 8),
-                anchor=tk.CENTER
-            )
-            self.mini_status_label.grid(row=2, column=0)
-
-            # Enable drag and drop on mini frame
-            self.register_drop_target(mini_drop_frame, DND_FILES)
-            self.register_drop_target(mini_drop_label, DND_FILES)
-
-            # Mini link sections (dual-host stacked)
-            mini_links_frame = ttk.Frame(self.mini_frame)
-            mini_links_frame.grid(row=1, column=0, pady=(5, 0), sticky=(tk.W, tk.E))
-            mini_links_frame.columnconfigure(0, weight=1)
-
-            # Gofile mini section
-            self.mini_gofile_indicator = ttk.Label(mini_links_frame, text="✓", font=('Arial', 8, 'bold'), foreground="green")
-            self.mini_gofile_indicator.grid(row=0, column=0, sticky=tk.W)
-            mini_gofile_name = ttk.Label(mini_links_frame, text=" Gofile", font=('Arial', 8, 'bold'))
-            mini_gofile_name.grid(row=0, column=0, sticky=tk.W, padx=(15, 0))
-
-            mini_gofile_buttons = ttk.Frame(mini_links_frame)
-            mini_gofile_buttons.grid(row=1, column=0, pady=(2, 5))
-
-            mini_gofile_copy = ttk.Button(mini_gofile_buttons, text="Copy",
-                                         command=lambda: self.copy_link("gofile"), width=8)
-            mini_gofile_copy.grid(row=0, column=0, padx=2)
-
-            mini_gofile_open = ttk.Button(mini_gofile_buttons, text="Open",
-                                         command=lambda: self.open_link("gofile"), width=8)
-            mini_gofile_open.grid(row=0, column=1, padx=2)
-
-            # Buzzheavier mini section
-            self.mini_buzzheavier_indicator = ttk.Label(mini_links_frame, text="⟳", font=('Arial', 8, 'bold'), foreground="orange")
-            self.mini_buzzheavier_indicator.grid(row=2, column=0, sticky=tk.W)
-            mini_buzzheavier_name = ttk.Label(mini_links_frame, text=" Buzzheavier", font=('Arial', 8, 'bold'))
-            mini_buzzheavier_name.grid(row=2, column=0, sticky=tk.W, padx=(15, 0))
-
-            mini_buzzheavier_buttons = ttk.Frame(mini_links_frame)
-            mini_buzzheavier_buttons.grid(row=3, column=0, pady=(2, 5))
-
-            mini_buzzheavier_copy = ttk.Button(mini_buzzheavier_buttons, text="Copy",
-                                              command=lambda: self.copy_link("buzzheavier"), width=8)
-            mini_buzzheavier_copy.grid(row=0, column=0, padx=2)
-
-            mini_buzzheavier_open = ttk.Button(mini_buzzheavier_buttons, text="Open",
-                                              command=lambda: self.open_link("buzzheavier"), width=8)
-            mini_buzzheavier_open.grid(row=0, column=1, padx=2)
-
-            # Pixeldrain mini section
-            self.mini_pixeldrain_indicator = ttk.Label(mini_links_frame, text="⟳", font=('Arial', 8, 'bold'), foreground="orange")
-            self.mini_pixeldrain_indicator.grid(row=4, column=0, sticky=tk.W)
-            mini_pixeldrain_name = ttk.Label(mini_links_frame, text=" Pixeldrain", font=('Arial', 8, 'bold'))
-            mini_pixeldrain_name.grid(row=4, column=0, sticky=tk.W, padx=(15, 0))
-
-            mini_pixeldrain_buttons = ttk.Frame(mini_links_frame)
-            mini_pixeldrain_buttons.grid(row=5, column=0, pady=(2, 5))
-
-            mini_pixeldrain_copy = ttk.Button(mini_pixeldrain_buttons, text="Copy",
-                                             command=lambda: self.copy_link("pixeldrain"), width=8)
-            mini_pixeldrain_copy.grid(row=0, column=0, padx=2)
-
-            mini_pixeldrain_open = ttk.Button(mini_pixeldrain_buttons, text="Open",
-                                             command=lambda: self.open_link("pixeldrain"), width=8)
-            mini_pixeldrain_open.grid(row=0, column=1, padx=2)
-
-            # Apkadmin mini section
-            self.mini_apkadmin_indicator = ttk.Label(mini_links_frame, text="⏳", font=('Arial', 8, 'bold'), foreground="orange")
-            self.mini_apkadmin_indicator.grid(row=6, column=0, sticky=tk.W)
-            mini_apkadmin_name = ttk.Label(mini_links_frame, text=" Apkadmin", font=('Arial', 8, 'bold'))
-            mini_apkadmin_name.grid(row=6, column=0, sticky=tk.W, padx=(15, 0))
-
-            mini_apkadmin_buttons = ttk.Frame(mini_links_frame)
-            mini_apkadmin_buttons.grid(row=7, column=0, pady=(2, 5))
-
-            mini_apkadmin_copy = ttk.Button(mini_apkadmin_buttons, text="Copy",
-                                            command=lambda: self.copy_link("apkadmin"), width=8)
-            mini_apkadmin_copy.grid(row=0, column=0, padx=2)
-
-            mini_apkadmin_open = ttk.Button(mini_apkadmin_buttons, text="Open",
-                                            command=lambda: self.open_link("apkadmin"), width=8)
-            mini_apkadmin_open.grid(row=0, column=1, padx=2)
-
-            # Normal mode checkbox
-            normal_check = ttk.Checkbutton(mini_links_frame, text="Normal Mode",
-                                          variable=self.mini_mode,
-                                          command=self.toggle_mini_mode)
-            normal_check.grid(row=8, column=0, pady=(5, 0))
-
-            # Start in normal mode (hide mini frame)
-            self.mini_frame.grid_remove()
+            # Start draining worker-thread GUI updates before any thread runs
+            self.root.after(self.GUI_QUEUE_POLL_MS, self._pump_gui_queue)
 
             # Initialize API in separate thread
             init_thread = threading.Thread(target=self.initialize_api)

@@ -11,7 +11,6 @@ A comprehensive Python client library and multi-host uploader for [Gofile.io](ht
 Want a GUI application that uploads to all three hosts simultaneously? Check out [**drag_drop_uploader.py**](DRAG_DROP_UPLOADER_README.md) - a powerful drag-and-drop interface with:
 - 📤 Upload to Gofile, Buzzheavier, and Pixeldrain in parallel
 - ⚙️ Configurable host selection via settings menu
-- 🎯 Mini mode (always-on-top compact window)
 - 📁 Intelligent folder organization
 - ⚡ Real-time status indicators and upload speeds
 
