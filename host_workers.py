@@ -41,6 +41,19 @@ from config_loader import get_app_dir
 MD5_CHUNK_SIZE = 1024 * 1024
 
 
+def open_apkadmin_setup_guide(parent: Optional[tk.Misc] = None) -> None:
+    """Open the Apkadmin cookie setup guide in the default application."""
+    guide_path = os.path.join(get_app_dir(), "docs", "APKADMIN_SETUP.md")
+    if not os.path.exists(guide_path):
+        messagebox.showerror(
+            "Not Found",
+            f"Setup guide not found at:\n{guide_path}",
+            parent=parent,
+        )
+        return
+    os.startfile(guide_path)
+
+
 class HostWorkersMixin:
     """Connect to, upload to, and retry each configured file host."""
 
@@ -229,14 +242,7 @@ class HostWorkersMixin:
 
     def _open_setup_guide(self) -> None:
         """Open the Apkadmin setup guide in the default application."""
-        guide_path = os.path.join(get_app_dir(), "docs", "APKADMIN_SETUP.md")
-        if not os.path.exists(guide_path):
-            messagebox.showerror(
-                "Not Found",
-                f"Setup guide not found at:\n{guide_path}"
-            )
-            return
-        os.startfile(guide_path)
+        open_apkadmin_setup_guide(self.root)
 
     # ===== UPLOAD =====
 

@@ -10,6 +10,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, Dict, List, NamedTuple, Optional
 
+from host_workers import open_apkadmin_setup_guide
+
 
 class Field(NamedTuple):
     """One editable config key."""
@@ -120,6 +122,12 @@ class SettingsDialog:
                 self.entries[field.key] = entry
                 row += 1
 
+            if host.name == "apkadmin":
+                ttk.Button(frame, text="How do I get these values?",
+                          command=self._open_apkadmin_guide).grid(
+                    row=row, column=1, sticky=tk.W, pady=(0, 4))
+                row += 1
+
         ttk.Checkbutton(frame, text="Show secrets",
                         variable=self.show_secrets,
                         command=self._toggle_secret_visibility).grid(
@@ -142,6 +150,10 @@ class SettingsDialog:
             row=0, column=0, padx=4)
         ttk.Button(buttons, text="Cancel", command=self.window.destroy,
                    width=10).grid(row=0, column=1, padx=4)
+
+    def _open_apkadmin_guide(self) -> None:
+        """Open the Apkadmin cookie setup guide, for filling in these fields."""
+        open_apkadmin_setup_guide(self.window)
 
     def _open_raw_config(self) -> None:
         """Open config.json directly, for anything this form doesn't cover."""
