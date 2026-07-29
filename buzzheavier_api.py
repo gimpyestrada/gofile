@@ -13,7 +13,6 @@ import requests
 
 from upload_common import (
     BACKOFF_BASE_SECONDS,
-    UPLOAD_CONNECT_TIMEOUT,
     UPLOAD_MAX_RETRIES,
     UPLOAD_RETRY_DELAY,
     ProgressCallback,
@@ -220,13 +219,16 @@ class BuzzheavierAPI:
                         total_size
                     )
 
-                    # ProgressTrackingFile only fires while the body is still
-                    # being read, so a read timeout is still needed to catch a
-                    # connection that dies while awaiting the response.
+                    # timeout must stay None: urllib3 keeps the connect
+                    # timeout on the socket for the entire body send (the
+                    # read timeout only applies once the body is out), and
+                    # any numeric timeout puts the socket in per-send polling
+                    # mode -- which throttled large uploads to a fraction of
+                    # line speed and aborted busy sends mid-upload.
+                    # ProgressTrackingFile's stall check is the guard against
+                    # a dead upload.
                     response = self.session.put(
-                        url, data=progress_file,
-                        timeout=(UPLOAD_CONNECT_TIMEOUT,
-                                 self.upload_stall_timeout)
+                        url, data=progress_file, timeout=None
                     )
                     return self._handle_response(response)
                     
